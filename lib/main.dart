@@ -10,9 +10,12 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:flutter/services.dart'; // Import for Clipboard
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart' as ja;
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'checkpoint_storage.dart';
+import 'update_checker.dart';
 import 'youtube_playlist_utils.dart';
 
 late MyAudioHandler _audioHandler;
@@ -205,6 +208,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     _startVideoStatePolling();
     _setupConnectivityListener();
     _loadCheckpoint();
+    _checkForAppUpdate();
   }
 
   void _initLogo() {
@@ -519,6 +523,50 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       _checkpoint = checkpoint;
       _hasCheckpoint = checkpoint != null;
     });
+  }
+
+  Future<void> _checkForAppUpdate() async {
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      final updateInfo = await UpdateChecker.checkForUpdate(
+        currentVersion: packageInfo.version,
+      );
+
+      if (!mounted || updateInfo == null) return;
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('Aggiornamento disponibile'),
+            content: Text(
+              'È disponibile la versione ${updateInfo.version}. Vuoi aprire la pagina delle release di Radio Brong?',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('No'),
+              ),
+              FilledButton(
+                onPressed: () async {
+                  Navigator.of(dialogContext).pop();
+                  final uri = Uri.parse(updateInfo.url);
+                  if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Impossibile aprire il link delle release.')),
+                    );
+                  }
+                },
+                child: const Text('Sì'),
+              ),
+            ],
+          ),
+        );
+      });
+    } catch (_) {}
   }
 
   Future<void> _saveCheckpoint() async {

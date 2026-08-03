@@ -44,6 +44,8 @@ dependencies:
   audio_service: ^0.18.17
   just_audio: ^0.9.42
   http: ^1.2.2
+  package_info_plus: ^8.0.0
+  url_launcher: ^6.2.0
 
 dev_dependencies:
   flutter_test:
