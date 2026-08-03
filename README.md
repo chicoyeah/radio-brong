@@ -1,4 +1,4 @@
-![bronglogo](assets/bronglogo.gif)
+![bronglogo](assets/BrongLogo.gif)
 
 Benvenuti su **Radio Brong!**
 
