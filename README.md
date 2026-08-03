@@ -1,4 +1,4 @@
-# bronglogo.gif
+![bronglogo](assets/bronglogo.gif)
 
 Benvenuti su **Radio Brong!**
 
