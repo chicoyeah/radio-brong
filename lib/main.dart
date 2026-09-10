@@ -41,76 +41,86 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   void Function(String)? onNotificationAction;
 
   MyAudioHandler() {
-    playbackState.add(PlaybackState(
-      controls: [
-        MediaControl.skipToPrevious,
-        MediaControl.play,
-        MediaControl.stop,
-        MediaControl.skipToNext,
-      ],
-      systemActions: const {
-        MediaAction.seek,
-        MediaAction.seekForward,
-        MediaAction.seekBackward,
-      },
-      androidCompactActionIndices: const [0, 1, 3],
-      processingState: AudioProcessingState.ready,
-      playing: false,
-    ));
+    playbackState.add(
+      PlaybackState(
+        controls: [
+          MediaControl.skipToPrevious,
+          MediaControl.play,
+          MediaControl.stop,
+          MediaControl.skipToNext,
+        ],
+        systemActions: const {
+          MediaAction.seek,
+          MediaAction.seekForward,
+          MediaAction.seekBackward,
+        },
+        androidCompactActionIndices: const [0, 1, 3],
+        processingState: AudioProcessingState.ready,
+        playing: false,
+      ),
+    );
   }
 
   @override
   Future<void> play() async {
-    playbackState.add(playbackState.value.copyWith(
-      playing: true,
-      controls: [
-        MediaControl.skipToPrevious,
-        MediaControl.pause,
-        MediaControl.stop,
-        MediaControl.skipToNext,
-      ],
-    ));
+    playbackState.add(
+      playbackState.value.copyWith(
+        playing: true,
+        controls: [
+          MediaControl.skipToPrevious,
+          MediaControl.pause,
+          MediaControl.stop,
+          MediaControl.skipToNext,
+        ],
+      ),
+    );
   }
 
   @override
   Future<void> pause() async {
-    playbackState.add(playbackState.value.copyWith(
-      playing: false,
-      controls: [
-        MediaControl.skipToPrevious,
-        MediaControl.play,
-        MediaControl.stop,
-        MediaControl.skipToNext,
-      ],
-    ));
+    playbackState.add(
+      playbackState.value.copyWith(
+        playing: false,
+        controls: [
+          MediaControl.skipToPrevious,
+          MediaControl.play,
+          MediaControl.stop,
+          MediaControl.skipToNext,
+        ],
+      ),
+    );
   }
 
   @override
   Future<void> stop() async {
-    playbackState.add(playbackState.value.copyWith(
-      playing: false,
-      processingState: AudioProcessingState.ready,
-      controls: [
-        MediaControl.skipToPrevious,
-        MediaControl.play,
-        MediaControl.stop,
-        MediaControl.skipToNext,
-      ],
-    ));
+    playbackState.add(
+      playbackState.value.copyWith(
+        playing: false,
+        processingState: AudioProcessingState.ready,
+        controls: [
+          MediaControl.skipToPrevious,
+          MediaControl.play,
+          MediaControl.stop,
+          MediaControl.skipToNext,
+        ],
+      ),
+    );
     onNotificationAction?.call('stop');
   }
 
   Future<void> stopSilently() async {
-    playbackState.add(playbackState.value.copyWith(
-      playing: false,
-      processingState: AudioProcessingState.ready,
-      controls: [
-        MediaControl.skipToPrevious,
-        MediaControl.play,
-        MediaControl.stop,
-        MediaControl.skipToNext,
-      ],
-    ));
+    playbackState.add(
+      playbackState.value.copyWith(
+        playing: false,
+        processingState: AudioProcessingState.ready,
+        controls: [
+          MediaControl.skipToPrevious,
+          MediaControl.play,
+          MediaControl.stop,
+          MediaControl.skipToNext,
+        ],
+      ),
+    );
   }
 
   @override
@@ -129,20 +139,22 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }
 
   void updateMetadata(TrackItem item) {
-    mediaItem.add(MediaItem(
-      id: item.videoId,
-      album: "Radio Brong",
-      title: item.title,
-      artist: item.participant,
-      duration: item.duration,
-      artUri: item.thumbnailUrl != null ? Uri.parse(item.thumbnailUrl!) : null,
-    ));
+    mediaItem.add(
+      MediaItem(
+        id: item.videoId,
+        album: "Radio Brong",
+        title: item.title,
+        artist: item.participant,
+        duration: item.duration,
+        artUri: item.thumbnailUrl != null
+            ? Uri.parse(item.thumbnailUrl!)
+            : null,
+      ),
+    );
   }
 
   void updatePosition(Duration position) {
-    playbackState.add(playbackState.value.copyWith(
-      updatePosition: position,
-    ));
+    playbackState.add(playbackState.value.copyWith(updatePosition: position));
   }
 }
 
@@ -178,12 +190,13 @@ class RadioBrongHome extends StatefulWidget {
 class _RadioBrongHomeState extends State<RadioBrongHome> {
   late final String _selectedLogo;
 
-  static const String _introPlaylistUrl = 'https://www.youtube.com/playlist?list=PLBr8N5C2sDZI';
+  static const String _introPlaylistUrl =
+      'https://www.youtube.com/playlist?list=PLBr8N5C2sDZI';
 
   late final WebViewController _webViewController;
   final YoutubeExplode _yt = YoutubeExplode();
   bool _autoRedirectAttempted = false;
-  
+
   List<String> _lastParticipants = [];
   List<PlaylistItem> _playlist = [];
   List<TrackItem> _tracks = [];
@@ -301,7 +314,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
             if (!_isTransitioning) _audioHandler.play();
           } else if (message.message == 'videoPaused') {
             if (!_isTransitioning) _audioHandler.pause();
-          } else if (message.message == 'unavailableDetected' || message.message == 'unavailableDetectedNoLink') {
+          } else if (message.message == 'unavailableDetected' ||
+              message.message == 'unavailableDetectedNoLink') {
             debugPrint("Video unavailable detected: ${message.message}");
             _handleUnavailableVideo();
           }
@@ -444,11 +458,15 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     _audioHandler.playbackState.listen((state) {
       if (lastState == state.playing) return;
       lastState = state.playing;
-      
+
       if (state.playing) {
-        _webViewController.runJavaScript("document.querySelector('video')?.play()");
+        _webViewController.runJavaScript(
+          "document.querySelector('video')?.play()",
+        );
       } else {
-        _webViewController.runJavaScript("document.querySelector('video')?.pause()");
+        _webViewController.runJavaScript(
+          "document.querySelector('video')?.pause()",
+        );
       }
     });
 
@@ -459,15 +477,21 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       if (action.startsWith('seek:')) {
         final seconds = int.tryParse(action.split(':')[1]);
         if (seconds != null) {
-          _webViewController.runJavaScript("document.querySelector('video').currentTime = $seconds");
+          _webViewController.runJavaScript(
+            "document.querySelector('video').currentTime = $seconds",
+          );
         }
       }
     };
   }
 
   void _setupConnectivityListener() {
-    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((List<ConnectivityResult> results) {
-      final bool isConnected = results.any((result) => result != ConnectivityResult.none);
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+      List<ConnectivityResult> results,
+    ) {
+      final bool isConnected = results.any(
+        (result) => result != ConnectivityResult.none,
+      );
       if (isConnected && _isOffline) {
         _reloadIfNecessary();
       }
@@ -493,23 +517,27 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
 
   void _startVideoStatePolling() {
     _videoStateTimer?.cancel();
-    _videoStateTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) async {
+    _videoStateTimer = Timer.periodic(const Duration(milliseconds: 500), (
+      timer,
+    ) async {
       if (_currentIndex == -1 || _isProcessing || _isTransitioning) return;
       try {
         final result = await _webViewController.runJavaScriptReturningResult(
-          "var v = document.querySelector('video'); v ? (v.ended || (v.duration > 1 && v.currentTime > 0 && v.currentTime >= v.duration - 0.5)) + ',' + v.currentTime : 'false,0'"
+          "var v = document.querySelector('video'); v ? (v.ended || (v.duration > 1 && v.currentTime > 0 && v.currentTime >= v.duration - 0.5)) + ',' + v.currentTime : 'false,0'",
         );
-        
+
         final parts = result.toString().replaceAll('"', '').split(',');
         if (parts.length >= 2) {
           final bool ended = parts[0] == 'true';
           final double currentTime = double.tryParse(parts[1]) ?? 0;
-          
+
           if (ended) {
             debugPrint("Video ended detected via polling");
             _nextTrack();
           } else {
-            _audioHandler.updatePosition(Duration(seconds: currentTime.toInt()));
+            _audioHandler.updatePosition(
+              Duration(seconds: currentTime.toInt()),
+            );
           }
         }
       } catch (e) {}
@@ -553,10 +581,17 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                 onPressed: () async {
                   Navigator.of(dialogContext).pop();
                   final uri = Uri.parse(updateInfo.url);
-                  if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+                  if (!await launchUrl(
+                    uri,
+                    mode: LaunchMode.externalApplication,
+                  )) {
                     if (!mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Impossibile aprire il link delle release.')),
+                      const SnackBar(
+                        content: Text(
+                          'Impossibile aprire il link delle release.',
+                        ),
+                      ),
                     );
                   }
                 },
@@ -583,19 +618,18 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
 
     final checkpointTracks = _tracks
         .sublist(_currentIndex)
-        .map((track) => CheckpointTrack(
-              participant: track.participant,
-              videoId: track.videoId,
-              title: track.title,
-              thumbnailUrl: track.thumbnailUrl,
-              durationSeconds: track.duration?.inSeconds,
-            ))
+        .map(
+          (track) => CheckpointTrack(
+            participant: track.participant,
+            videoId: track.videoId,
+            title: track.title,
+            thumbnailUrl: track.thumbnailUrl,
+            durationSeconds: track.duration?.inSeconds,
+          ),
+        )
         .toList();
 
-    await _checkpointStorage.saveCheckpoint(
-      checkpointTracks,
-      0,
-    );
+    await _checkpointStorage.saveCheckpoint(checkpointTracks, 0);
     if (mounted) {
       setState(() {
         _checkpoint = CheckpointData(currentIndex: 0, tracks: checkpointTracks);
@@ -610,13 +644,17 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
 
     setState(() {
       _tracks = checkpoint.tracks
-          .map((track) => TrackItem(
-                participant: track.participant,
-                videoId: track.videoId,
-                title: track.title,
-                thumbnailUrl: track.thumbnailUrl,
-                duration: track.durationSeconds != null ? Duration(seconds: track.durationSeconds!) : null,
-              ))
+          .map(
+            (track) => TrackItem(
+              participant: track.participant,
+              videoId: track.videoId,
+              title: track.title,
+              thumbnailUrl: track.thumbnailUrl,
+              duration: track.durationSeconds != null
+                  ? Duration(seconds: track.durationSeconds!)
+                  : null,
+            ),
+          )
           .toList();
       _playlist = [];
       _currentIndex = 0;
@@ -640,7 +678,10 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     final themeData = _seasonalThemeData;
     final List<String>? result = await Navigator.of(context).push<List<String>>(
       MaterialPageRoute(
-        builder: (context) => ParticipantSelectorPage(initialList: _lastParticipants, themeData: themeData),
+        builder: (context) => ParticipantSelectorPage(
+          initialList: _lastParticipants,
+          themeData: themeData,
+        ),
         fullscreenDialog: true,
       ),
     );
@@ -658,7 +699,9 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
         throw Exception('Playlist ID non trovata');
       }
 
-      final response = await http.get(Uri.parse('https://www.youtube.com/playlist?list=$playlistId'));
+      final response = await http.get(
+        Uri.parse('https://www.youtube.com/playlist?list=$playlistId'),
+      );
       if (response.statusCode != 200) {
         throw Exception('HTTP ${response.statusCode}');
       }
@@ -686,7 +729,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     for (String p in participants) {
       final PlaylistItem? item = await Navigator.of(context).push<PlaylistItem>(
         MaterialPageRoute(
-          builder: (context) => YoutubeSearchPage(participantName: p, themeData: themeData),
+          builder: (context) =>
+              YoutubeSearchPage(participantName: p, themeData: themeData),
           fullscreenDialog: true,
         ),
       );
@@ -730,13 +774,15 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       var video = await _yt.videos.get(item.url);
       if (mounted) {
         setState(() {
-          _tracks.add(TrackItem(
-            participant: item.participant,
-            videoId: video.id.value,
-            title: video.title,
-            thumbnailUrl: video.thumbnails.mediumResUrl,
-            duration: video.duration,
-          ));
+          _tracks.add(
+            TrackItem(
+              participant: item.participant,
+              videoId: video.id.value,
+              title: video.title,
+              thumbnailUrl: video.thumbnails.mediumResUrl,
+              duration: video.duration,
+            ),
+          );
           if (index == 0) {
             _currentIndex = 0;
             _playCurrent();
@@ -756,7 +802,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       _volumeBoost = 1.0;
     });
     TrackItem item = _tracks[_currentIndex];
-    
+
     _audioHandler.updateMetadata(item);
     _audioHandler.updatePosition(Duration.zero);
     _audioHandler.play();
@@ -779,7 +825,9 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     setState(() {
       _volumeBoost = boost;
     });
-    _webViewController.runJavaScript("window._radioVolumeBooster && (window._radioVolumeBooster.gain.value = $boost)");
+    _webViewController.runJavaScript(
+      "window._radioVolumeBooster && (window._radioVolumeBooster.gain.value = $boost)",
+    );
   }
 
   Future<void> _openVolumeBoosterSheet() async {
@@ -816,13 +864,19 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text('Boost: x${localBoost.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white)),
+                      Text(
+                        'Boost: x${localBoost.toStringAsFixed(2)}',
+                        style: const TextStyle(color: Colors.white),
+                      ),
                       TextButton(
                         onPressed: () {
                           setSheetState(() => localBoost = 1.0);
                           _setVolumeBoost(1.0);
                         },
-                        child: const Text('Reset', style: TextStyle(color: Colors.white)),
+                        child: const Text(
+                          'Reset',
+                          style: TextStyle(color: Colors.white),
+                        ),
                       ),
                     ],
                   ),
@@ -845,9 +899,14 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                       onPressed: () => Navigator.pop(context),
                       style: OutlinedButton.styleFrom(
                         side: BorderSide(color: _seasonalButtonColor),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                       ),
-                      child: const Text('Chiudi', style: TextStyle(color: Colors.white)),
+                      child: const Text(
+                        'Chiudi',
+                        style: TextStyle(color: Colors.white),
+                      ),
                     ),
                   ),
                 ],
@@ -859,7 +918,11 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     );
   }
 
-  Widget _buildControlButton(IconData icon, String tooltip, VoidCallback onPressed) {
+  Widget _buildControlButton(
+    IconData icon,
+    String tooltip,
+    VoidCallback onPressed,
+  ) {
     return Expanded(
       child: InkWell(
         onTap: onPressed,
@@ -871,9 +934,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
             borderRadius: BorderRadius.circular(18),
             border: Border.all(color: Colors.white.withOpacity(0.08)),
           ),
-          child: Center(
-            child: Icon(icon, color: Colors.white, size: 28),
-          ),
+          child: Center(child: Icon(icon, color: Colors.white, size: 28)),
         ),
       ),
     );
@@ -894,10 +955,18 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text("Interrompi Radio"),
-        content: const Text("Vuoi davvero interrompere la radio e cancellare la playlist attuale?"),
+        content: const Text(
+          "Vuoi davvero interrompere la radio e cancellare la playlist attuale?",
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("No")),
-          TextButton(onPressed: () => Navigator.pop(context, true), child: const Text("Sì")),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("No"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("Sì"),
+          ),
         ],
       ),
     );
@@ -909,7 +978,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
 
   Future<void> _nextTrack() async {
     final now = DateTime.now();
-    if (_lastTrackChange != null && now.difference(_lastTrackChange!) < const Duration(seconds: 2)) {
+    if (_lastTrackChange != null &&
+        now.difference(_lastTrackChange!) < const Duration(seconds: 2)) {
       return;
     }
     _lastTrackChange = now;
@@ -948,8 +1018,9 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
 
   @override
   Widget build(BuildContext context) {
-    TrackItem? currentItem = (_currentIndex >= 0 && _currentIndex < _tracks.length) 
-        ? _tracks[_currentIndex] 
+    TrackItem? currentItem =
+        (_currentIndex >= 0 && _currentIndex < _tracks.length)
+        ? _tracks[_currentIndex]
         : null;
 
     final themeData = Theme.of(context).copyWith(
@@ -1008,40 +1079,81 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                               child: Column(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  Icon(Icons.radio, size: 96, color: Colors.white.withOpacity(0.18)),
+                                  Icon(
+                                    Icons.radio,
+                                    size: 96,
+                                    color: Colors.white.withOpacity(0.18),
+                                  ),
                                   const SizedBox(height: 12),
                                   Text(
                                     "Nessun brano in riproduzione",
-                                    style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 16),
+                                    style: TextStyle(
+                                      color: Colors.white.withOpacity(0.7),
+                                      fontSize: 16,
+                                    ),
                                   ),
                                   const SizedBox(height: 8),
                                   Text(
                                     "Premi il pulsante qui sotto per iniziare",
-                                    style: TextStyle(color: Colors.white.withOpacity(0.55), fontSize: 13),
+                                    style: TextStyle(
+                                      color: Colors.white.withOpacity(0.55),
+                                      fontSize: 13,
+                                    ),
                                   ),
                                   const SizedBox(height: 20),
                                   Column(
                                     children: [
                                       ElevatedButton.icon(
-                                        onPressed: _isProcessing ? null : _openParticipantSelector,
-                                        icon: Icon(Icons.playlist_play, color: Colors.white),
-                                        label: const Text('Avvia playlist', style: TextStyle(color: Colors.white)),
+                                        onPressed: _isProcessing
+                                            ? null
+                                            : _openParticipantSelector,
+                                        icon: Icon(
+                                          Icons.playlist_play,
+                                          color: Colors.white,
+                                        ),
+                                        label: const Text(
+                                          'Avvia playlist',
+                                          style: TextStyle(color: Colors.white),
+                                        ),
                                         style: ElevatedButton.styleFrom(
                                           backgroundColor: _seasonalButtonColor,
-                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-                                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(
+                                              18,
+                                            ),
+                                          ),
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 24,
+                                            vertical: 14,
+                                          ),
                                         ),
                                       ),
                                       if (_hasCheckpoint) ...[
                                         const SizedBox(height: 12),
                                         OutlinedButton.icon(
                                           onPressed: _resumeFromCheckpoint,
-                                          icon: const Icon(Icons.restart_alt, color: Colors.white),
-                                          label: const Text('Riprendi dal checkpoint', style: TextStyle(color: Colors.white)),
+                                          icon: const Icon(
+                                            Icons.restart_alt,
+                                            color: Colors.white,
+                                          ),
+                                          label: const Text(
+                                            'Riprendi dal checkpoint',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                            ),
+                                          ),
                                           style: OutlinedButton.styleFrom(
-                                            side: BorderSide(color: _seasonalButtonColor),
-                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-                                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                                            side: BorderSide(
+                                              color: _seasonalButtonColor,
+                                            ),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(18),
+                                            ),
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 20,
+                                              vertical: 12,
+                                            ),
                                           ),
                                         ),
                                       ],
@@ -1056,32 +1168,53 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                             top: 16,
                             left: 16,
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 10,
+                              ),
                               decoration: BoxDecoration(
                                 color: Colors.black.withOpacity(0.35),
                                 borderRadius: BorderRadius.circular(16),
-                                border: Border.all(color: Colors.white.withOpacity(0.08)),
+                                border: Border.all(
+                                  color: Colors.white.withOpacity(0.08),
+                                ),
                               ),
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Icon(Icons.person, color: Colors.white.withOpacity(0.9), size: 16),
+                                  Icon(
+                                    Icons.person,
+                                    color: Colors.white.withOpacity(0.9),
+                                    size: 16,
+                                  ),
                                   const SizedBox(width: 8),
                                   Text(
                                     currentItem!.participant,
-                                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13),
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 13,
+                                    ),
                                   ),
                                   if (_volumeBoost > 1.0) ...[
                                     const SizedBox(width: 10),
                                     Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 4,
+                                      ),
                                       decoration: BoxDecoration(
-                                        color: _seasonalButtonColor.withOpacity(0.2),
+                                        color: _seasonalButtonColor.withOpacity(
+                                          0.2,
+                                        ),
                                         borderRadius: BorderRadius.circular(12),
                                       ),
                                       child: Text(
                                         'x${_volumeBoost.toStringAsFixed(2)}',
-                                        style: TextStyle(color: Colors.white.withOpacity(0.95), fontSize: 12),
+                                        style: TextStyle(
+                                          color: Colors.white.withOpacity(0.95),
+                                          fontSize: 12,
+                                        ),
                                       ),
                                     ),
                                   ],
@@ -1094,14 +1227,20 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                             top: 16,
                             left: 16,
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
                               decoration: BoxDecoration(
                                 color: Colors.redAccent.withOpacity(0.88),
                                 borderRadius: BorderRadius.circular(14),
                               ),
                               child: const Text(
                                 'Offline',
-                                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                             ),
                           ),
@@ -1111,21 +1250,32 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                 ),
               ),
               const SizedBox(height: 20),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  _buildControlButton(Icons.skip_previous, 'Precedente', _prevTrack),
-                  const SizedBox(width: 10),
-                  _buildControlButton(Icons.stop, 'Stop', _stopAudio),
-                  const SizedBox(width: 10),
-                  _buildControlButton(Icons.skip_next, 'Successivo', _nextTrack),
-                ],
+              SafeArea(
+                top: false,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    _buildControlButton(
+                      Icons.skip_previous,
+                      'Precedente',
+                      _prevTrack,
+                    ),
+                    const SizedBox(width: 10),
+                    _buildControlButton(Icons.stop, 'Stop', _stopAudio),
+                    const SizedBox(width: 10),
+                    _buildControlButton(
+                      Icons.skip_next,
+                      'Successivo',
+                      _nextTrack,
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(height: 12),
             ],
           ),
         ),
-    ),
+      ),
     );
   }
 }
@@ -1134,7 +1284,11 @@ class PlaylistItem {
   final String participant;
   final String url;
   final String? thumbnailUrl;
-  PlaylistItem({required this.participant, required this.url, this.thumbnailUrl});
+  PlaylistItem({
+    required this.participant,
+    required this.url,
+    this.thumbnailUrl,
+  });
 }
 
 class TrackItem {
@@ -1143,15 +1297,26 @@ class TrackItem {
   final String title;
   final String? thumbnailUrl;
   final Duration? duration;
-  TrackItem({required this.participant, required this.videoId, required this.title, this.thumbnailUrl, this.duration});
+  TrackItem({
+    required this.participant,
+    required this.videoId,
+    required this.title,
+    this.thumbnailUrl,
+    this.duration,
+  });
 }
 
 class ParticipantSelectorPage extends StatefulWidget {
   final List<String> initialList;
   final ThemeData themeData;
-  const ParticipantSelectorPage({super.key, required this.initialList, required this.themeData});
+  const ParticipantSelectorPage({
+    super.key,
+    required this.initialList,
+    required this.themeData,
+  });
   @override
-  State<ParticipantSelectorPage> createState() => _ParticipantSelectorPageState();
+  State<ParticipantSelectorPage> createState() =>
+      _ParticipantSelectorPageState();
 }
 
 class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
@@ -1182,9 +1347,18 @@ class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            const Text('Seleziona partecipanti', style: TextStyle(fontWeight: FontWeight.w700)),
+            const Text(
+              'Seleziona partecipanti',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
             const SizedBox(height: 4),
-            Text('Aggiungi nomi e avvia la radio', style: TextStyle(color: Colors.white.withOpacity(0.75), fontSize: 13)),
+            Text(
+              'Aggiungi nomi e avvia la radio',
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.75),
+                fontSize: 13,
+              ),
+            ),
           ],
         ),
         actions: [
@@ -1208,21 +1382,35 @@ class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
                               child: Text(
                                 'Nessun partecipante aggiunto ancora.',
                                 textAlign: TextAlign.center,
-                                style: TextStyle(color: Colors.white.withOpacity(0.7)),
+                                style: TextStyle(
+                                  color: Colors.white.withOpacity(0.7),
+                                ),
                               ),
                             )
                           : ListView.separated(
                               itemCount: _participants.length,
-                              separatorBuilder: (context, index) => const SizedBox(height: 10),
+                              separatorBuilder: (context, index) =>
+                                  const SizedBox(height: 10),
                               itemBuilder: (context, index) {
                                 return Material(
                                   color: colorScheme.surface,
                                   borderRadius: BorderRadius.circular(18),
                                   child: ListTile(
-                                    title: Text(_participants[index], style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                                    title: Text(
+                                      _participants[index],
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
                                     trailing: IconButton(
-                                      icon: const Icon(Icons.delete, color: Colors.white70),
-                                      onPressed: () => setState(() => _participants.removeAt(index)),
+                                      icon: const Icon(
+                                        Icons.delete,
+                                        color: Colors.white70,
+                                      ),
+                                      onPressed: () => setState(
+                                        () => _participants.removeAt(index),
+                                      ),
                                     ),
                                   ),
                                 );
@@ -1231,11 +1419,16 @@ class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
                     ),
                     const SizedBox(height: 16),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
                       decoration: BoxDecoration(
                         color: colorScheme.surface,
                         borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: Colors.white.withOpacity(0.08)),
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.08),
+                        ),
                       ),
                       child: Row(
                         children: [
@@ -1245,7 +1438,9 @@ class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
                               style: const TextStyle(color: Colors.white),
                               decoration: InputDecoration(
                                 hintText: 'Nome partecipante',
-                                hintStyle: TextStyle(color: Colors.white.withOpacity(0.6)),
+                                hintStyle: TextStyle(
+                                  color: Colors.white.withOpacity(0.6),
+                                ),
                                 border: InputBorder.none,
                               ),
                               onSubmitted: (_) => _addParticipant(),
@@ -1265,14 +1460,21 @@ class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: _participants.isEmpty ? null : () => Navigator.pop(context, _participants),
+                  onPressed: _participants.isEmpty
+                      ? null
+                      : () => Navigator.pop(context, _participants),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: colorScheme.primary,
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
                   ),
-                  child: const Text('Inizia Radio', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  child: const Text(
+                    'Inizia Radio',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
                 ),
               ),
             ],
@@ -1295,7 +1497,11 @@ class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
 class YoutubeSearchPage extends StatefulWidget {
   final String participantName;
   final ThemeData themeData;
-  const YoutubeSearchPage({super.key, required this.participantName, required this.themeData});
+  const YoutubeSearchPage({
+    super.key,
+    required this.participantName,
+    required this.themeData,
+  });
   @override
   State<YoutubeSearchPage> createState() => _YoutubeSearchPageState();
 }
@@ -1308,10 +1514,15 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
 
   Future<void> _search(String query) async {
     if (query.isEmpty) return;
-    setState(() { _isSearching = true; _results = []; });
+    setState(() {
+      _isSearching = true;
+      _results = [];
+    });
     try {
       var searchList = await _yt.search.getVideos(query);
-      setState(() { _results = searchList.take(5).toList(); });
+      setState(() {
+        _results = searchList.take(5).toList();
+      });
     } catch (e) {
       _showErrorDialog("Errore ricerca", "Impossibile cercare su YouTube.");
     } finally {
@@ -1320,16 +1531,28 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
   }
 
   Future<void> _pasteLink() async {
-    ClipboardData? clipboardData = await Clipboard.getData(Clipboard.kTextPlain);
+    ClipboardData? clipboardData = await Clipboard.getData(
+      Clipboard.kTextPlain,
+    );
     String? pastedText = clipboardData?.text?.trim();
     if (pastedText != null && pastedText.isNotEmpty) {
       try {
         Video video = await _yt.videos.get(pastedText);
         if (!mounted) return;
-        Navigator.pop(context, PlaylistItem(participant: widget.participantName, url: video.url, thumbnailUrl: video.thumbnails.mediumResUrl));
+        Navigator.pop(
+          context,
+          PlaylistItem(
+            participant: widget.participantName,
+            url: video.url,
+            thumbnailUrl: video.thumbnails.mediumResUrl,
+          ),
+        );
       } catch (e) {
         if (!mounted) return;
-        _showErrorDialog("Link non valido", "Impossibile recuperare i dettagli del video.");
+        _showErrorDialog(
+          "Link non valido",
+          "Impossibile recuperare i dettagli del video.",
+        );
       }
     }
   }
@@ -1342,7 +1565,10 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
         title: Text(title),
         content: Text(message),
         actions: <Widget>[
-          TextButton(child: const Text("Ok"), onPressed: () => Navigator.of(context).pop()),
+          TextButton(
+            child: const Text("Ok"),
+            onPressed: () => Navigator.of(context).pop(),
+          ),
         ],
       ),
     );
@@ -1367,9 +1593,18 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Text('Cerca per ${widget.participantName}', style: const TextStyle(fontWeight: FontWeight.w700)),
+            Text(
+              'Cerca per ${widget.participantName}',
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
             const SizedBox(height: 4),
-            Text('Scegli un video YouTube', style: TextStyle(color: Colors.white.withOpacity(0.75), fontSize: 13)),
+            Text(
+              'Scegli un video YouTube',
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.75),
+                fontSize: 13,
+              ),
+            ),
           ],
         ),
         actions: [
@@ -1385,7 +1620,10 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
           child: Column(
             children: [
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
                 decoration: BoxDecoration(
                   color: colorScheme.surface,
                   borderRadius: BorderRadius.circular(18),
@@ -1399,7 +1637,9 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
                         style: const TextStyle(color: Colors.white),
                         decoration: InputDecoration(
                           hintText: 'Cerca su YouTube',
-                          hintStyle: TextStyle(color: Colors.white.withOpacity(0.6)),
+                          hintStyle: TextStyle(
+                            color: Colors.white.withOpacity(0.6),
+                          ),
                           border: InputBorder.none,
                         ),
                         onSubmitted: _search,
@@ -1416,14 +1656,25 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Text('Risultati', style: TextStyle(color: Colors.white.withOpacity(0.85), fontWeight: FontWeight.w600)),
+                  Text(
+                    'Risultati',
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.85),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                   TextButton.icon(
                     onPressed: _pasteLink,
                     icon: Icon(Icons.link, color: colorScheme.primary),
-                    label: Text('Incolla link', style: TextStyle(color: colorScheme.primary)),
+                    label: Text(
+                      'Incolla link',
+                      style: TextStyle(color: colorScheme.primary),
+                    ),
                     style: TextButton.styleFrom(
                       backgroundColor: Colors.white.withOpacity(0.05),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
                     ),
                   ),
                 ],
@@ -1433,70 +1684,118 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
                 child: _isSearching
                     ? const Center(child: CircularProgressIndicator())
                     : _results.isEmpty
-                        ? Center(
-                            child: Text(
-                              'Nessun risultato. Scrivi qualcosa sopra per cercare.',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(color: Colors.white.withOpacity(0.7)),
-                            ),
-                          )
-                        : ListView.separated(
-                            itemCount: _results.length,
-                            separatorBuilder: (context, index) => const SizedBox(height: 10),
-                            itemBuilder: (context, index) {
-                              var video = _results[index];
-                              return Material(
-                                color: colorScheme.surface,
-                                borderRadius: BorderRadius.circular(18),
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(18),
-                                  onTap: () async {
-                                    if (video.duration != null && video.duration! > const Duration(minutes: 5)) {
-                                      bool? confirm = await showDialog<bool>(
-                                        context: context,
-                                        builder: (context) => AlertDialog(
-                                          title: const Text("Canzone lunga"),
-                                          content: const Text("La canzone è più lunga di 5 minuti. Vuoi aggiungerla comunque?"),
-                                          actions: [
-                                            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("No")),
-                                            TextButton(onPressed: () => Navigator.pop(context, true), child: const Text("Sì")),
-                                          ],
+                    ? Center(
+                        child: Text(
+                          'Nessun risultato. Scrivi qualcosa sopra per cercare.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.7),
+                          ),
+                        ),
+                      )
+                    : ListView.separated(
+                        itemCount: _results.length,
+                        separatorBuilder: (context, index) =>
+                            const SizedBox(height: 10),
+                        itemBuilder: (context, index) {
+                          var video = _results[index];
+                          return Material(
+                            color: colorScheme.surface,
+                            borderRadius: BorderRadius.circular(18),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(18),
+                              onTap: () async {
+                                if (video.duration != null &&
+                                    video.duration! >
+                                        const Duration(minutes: 5)) {
+                                  bool? confirm = await showDialog<bool>(
+                                    context: context,
+                                    builder: (context) => AlertDialog(
+                                      title: const Text("Canzone lunga"),
+                                      content: const Text(
+                                        "La canzone è più lunga di 5 minuti. Vuoi aggiungerla comunque?",
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () =>
+                                              Navigator.pop(context, false),
+                                          child: const Text("No"),
                                         ),
-                                      );
-                                      if (confirm != true) return;
-                                    }
-                                    if (!mounted) return;
-                                    Navigator.pop(context, PlaylistItem(participant: widget.participantName, url: video.url, thumbnailUrl: video.thumbnails.mediumResUrl));
-                                  },
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-                                    child: Row(
-                                      children: [
-                                        ClipRRect(
-                                          borderRadius: BorderRadius.circular(14),
-                                          child: Image.network(video.thumbnails.lowResUrl, width: 82, height: 58, fit: BoxFit.cover),
-                                        ),
-                                        const SizedBox(width: 12),
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Text(video.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                                              const SizedBox(height: 6),
-                                              Text(
-                                                video.duration?.toString().split('.').first ?? "??:??",
-                                                style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 13),
-                                              ),
-                                            ],
-                                          ),
+                                        TextButton(
+                                          onPressed: () =>
+                                              Navigator.pop(context, true),
+                                          child: const Text("Sì"),
                                         ),
                                       ],
                                     ),
+                                  );
+                                  if (confirm != true) return;
+                                }
+                                if (!mounted) return;
+                                Navigator.pop(
+                                  context,
+                                  PlaylistItem(
+                                    participant: widget.participantName,
+                                    url: video.url,
+                                    thumbnailUrl: video.thumbnails.mediumResUrl,
                                   ),
+                                );
+                              },
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 14,
                                 ),
-                              );
-                            },
-                          ),
+                                child: Row(
+                                  children: [
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(14),
+                                      child: Image.network(
+                                        video.thumbnails.lowResUrl,
+                                        width: 82,
+                                        height: 58,
+                                        fit: BoxFit.cover,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            video.title,
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 6),
+                                          Text(
+                                            video.duration
+                                                    ?.toString()
+                                                    .split('.')
+                                                    .first ??
+                                                "??:??",
+                                            style: TextStyle(
+                                              color: Colors.white.withOpacity(
+                                                0.7,
+                                              ),
+                                              fontSize: 13,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
               ),
             ],
           ),
