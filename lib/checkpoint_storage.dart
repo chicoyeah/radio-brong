@@ -7,7 +7,7 @@ typedef DirectoryProvider = Future<Directory> Function();
 
 class CheckpointStorage {
   CheckpointStorage({DirectoryProvider? directoryProvider})
-      : _directoryProvider = directoryProvider ?? _defaultDirectoryProvider;
+    : _directoryProvider = directoryProvider ?? _defaultDirectoryProvider;
 
   final DirectoryProvider _directoryProvider;
 
@@ -20,7 +20,10 @@ class CheckpointStorage {
     return File('${directory.path}/radio_brong_checkpoint.json');
   }
 
-  Future<void> saveCheckpoint(List<CheckpointTrack> tracks, int currentIndex) async {
+  Future<void> saveCheckpoint(
+    List<CheckpointTrack> tracks,
+    int currentIndex,
+  ) async {
     if (tracks.isEmpty) {
       await clearCheckpoint();
       return;
@@ -52,8 +55,11 @@ class CheckpointStorage {
       return null;
     }
 
-    final tracks = (decoded['tracks'] as List<dynamic>?)
-            ?.map((item) => CheckpointTrack.fromJson(item as Map<String, dynamic>))
+    final tracks =
+        (decoded['tracks'] as List<dynamic>?)
+            ?.map(
+              (item) => CheckpointTrack.fromJson(item as Map<String, dynamic>),
+            )
             .toList() ??
         <CheckpointTrack>[];
 
@@ -62,7 +68,8 @@ class CheckpointStorage {
     }
 
     return CheckpointData(
-      currentIndex: int.tryParse(decoded['currentIndex']?.toString() ?? '0') ?? 0,
+      currentIndex:
+          int.tryParse(decoded['currentIndex']?.toString() ?? '0') ?? 0,
       tracks: tracks,
     );
   }
@@ -89,6 +96,8 @@ class CheckpointTrack {
     required this.title,
     this.thumbnailUrl,
     this.durationSeconds,
+    this.participantPosition,
+    this.totalParticipants,
   });
 
   final String participant;
@@ -96,6 +105,8 @@ class CheckpointTrack {
   final String title;
   final String? thumbnailUrl;
   final int? durationSeconds;
+  final int? participantPosition;
+  final int? totalParticipants;
 
   factory CheckpointTrack.fromJson(Map<String, dynamic> json) {
     return CheckpointTrack(
@@ -104,6 +115,12 @@ class CheckpointTrack {
       title: json['title']?.toString() ?? '',
       thumbnailUrl: json['thumbnailUrl']?.toString(),
       durationSeconds: int.tryParse(json['durationSeconds']?.toString() ?? ''),
+      participantPosition: int.tryParse(
+        json['participantPosition']?.toString() ?? '',
+      ),
+      totalParticipants: int.tryParse(
+        json['totalParticipants']?.toString() ?? '',
+      ),
     );
   }
 
@@ -114,6 +131,8 @@ class CheckpointTrack {
       'title': title,
       'thumbnailUrl': thumbnailUrl,
       'durationSeconds': durationSeconds,
+      'participantPosition': participantPosition,
+      'totalParticipants': totalParticipants,
     };
   }
 }

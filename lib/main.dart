@@ -144,7 +144,7 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         id: item.videoId,
         album: "Radio Brong",
         title: item.title,
-        artist: item.participant,
+        artist: item.participantLabel,
         duration: item.duration,
         artUri: item.thumbnailUrl != null
             ? Uri.parse(item.thumbnailUrl!)
@@ -625,6 +625,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
             title: track.title,
             thumbnailUrl: track.thumbnailUrl,
             durationSeconds: track.duration?.inSeconds,
+            participantPosition: track.participantPosition,
+            totalParticipants: track.totalParticipants,
           ),
         )
         .toList();
@@ -653,6 +655,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
               duration: track.durationSeconds != null
                   ? Duration(seconds: track.durationSeconds!)
                   : null,
+              participantPosition: track.participantPosition,
+              totalParticipants: track.totalParticipants,
             ),
           )
           .toList();
@@ -726,7 +730,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     }
 
     final themeData = _seasonalThemeData;
-    for (String p in participants) {
+    for (int i = 0; i < participants.length; i++) {
+      final p = participants[i];
       final PlaylistItem? item = await Navigator.of(context).push<PlaylistItem>(
         MaterialPageRoute(
           builder: (context) =>
@@ -735,7 +740,16 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
         ),
       );
       if (item != null) {
-        newPlaylist.add(item);
+        newPlaylist.add(
+          PlaylistItem(
+            participant: item.participant,
+            url: item.url,
+            videoId: item.videoId,
+            thumbnailUrl: item.thumbnailUrl,
+            participantPosition: i + 1,
+            totalParticipants: participants.length,
+          ),
+        );
       }
     }
 
@@ -765,33 +779,53 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       setState(() {
         _isProcessing = false;
       });
+      if (_tracks.isNotEmpty) {
+        _currentIndex = 0;
+        await _playCurrent();
+      }
     }
   }
 
   Future<void> _processItem(int index) async {
-    PlaylistItem item = _playlist[index];
+    final item = _playlist[index];
     try {
-      var video = await _yt.videos.get(item.url);
-      if (mounted) {
-        setState(() {
-          _tracks.add(
-            TrackItem(
-              participant: item.participant,
-              videoId: video.id.value,
-              title: video.title,
-              thumbnailUrl: video.thumbnails.mediumResUrl,
-              duration: video.duration,
-            ),
-          );
-          if (index == 0) {
-            _currentIndex = 0;
-            _playCurrent();
-          }
-        });
-      }
+      final video = await _yt.videos.get(item.url);
+      _addTrack(
+        item,
+        videoId: video.id.value,
+        title: video.title,
+        thumbnailUrl: video.thumbnails.mediumResUrl,
+        duration: video.duration,
+      );
     } catch (e) {
       debugPrint("Metadata error: $e");
+      if (item.videoId != null) {
+        _addTrack(item, videoId: item.videoId!, title: item.participant);
+      }
     }
+  }
+
+  void _addTrack(
+    PlaylistItem item, {
+    required String videoId,
+    required String title,
+    String? thumbnailUrl,
+    Duration? duration,
+  }) {
+    if (!mounted) return;
+    setState(() {
+      _tracks.add(
+        TrackItem(
+          participant: item.participant,
+          videoId: videoId,
+          title: title,
+          thumbnailUrl: thumbnailUrl,
+          duration: duration,
+          participantPosition: item.participantPosition,
+          totalParticipants: item.totalParticipants,
+        ),
+      );
+    });
   }
 
   Future<void> _playCurrent() async {
@@ -1189,7 +1223,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                                   ),
                                   const SizedBox(width: 8),
                                   Text(
-                                    currentItem!.participant,
+                                    currentItem!.participantLabel,
                                     style: const TextStyle(
                                       color: Colors.white,
                                       fontWeight: FontWeight.w700,
@@ -1283,11 +1317,17 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
 class PlaylistItem {
   final String participant;
   final String url;
+  final String? videoId;
   final String? thumbnailUrl;
+  final int? participantPosition;
+  final int? totalParticipants;
   PlaylistItem({
     required this.participant,
     required this.url,
+    this.videoId,
     this.thumbnailUrl,
+    this.participantPosition,
+    this.totalParticipants,
   });
 }
 
@@ -1297,13 +1337,24 @@ class TrackItem {
   final String title;
   final String? thumbnailUrl;
   final Duration? duration;
+  final int? participantPosition;
+  final int? totalParticipants;
   TrackItem({
     required this.participant,
     required this.videoId,
     required this.title,
     this.thumbnailUrl,
     this.duration,
+    this.participantPosition,
+    this.totalParticipants,
   });
+
+  String get participantLabel {
+    if (participantPosition == null || totalParticipants == null) {
+      return participant;
+    }
+    return '$participant · $participantPosition/$totalParticipants';
+  }
 }
 
 class ParticipantSelectorPage extends StatefulWidget {
@@ -1544,6 +1595,7 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
           PlaylistItem(
             participant: widget.participantName,
             url: video.url,
+            videoId: video.id.value,
             thumbnailUrl: video.thumbnails.mediumResUrl,
           ),
         );
@@ -1737,6 +1789,7 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
                                   PlaylistItem(
                                     participant: widget.participantName,
                                     url: video.url,
+                                    videoId: video.id.value,
                                     thumbnailUrl: video.thumbnails.mediumResUrl,
                                   ),
                                 );
