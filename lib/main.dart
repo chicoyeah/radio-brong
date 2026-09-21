@@ -730,7 +730,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     }
 
     final themeData = _seasonalThemeData;
-    for (int i = 0; i < participants.length; i++) {
+    int i = 0;
+    while (i < participants.length) {
       final p = participants[i];
       final PlaylistItem? item = await Navigator.of(context).push<PlaylistItem>(
         MaterialPageRoute(
@@ -739,18 +740,34 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
           fullscreenDialog: true,
         ),
       );
-      if (item != null) {
-        newPlaylist.add(
-          PlaylistItem(
-            participant: item.participant,
-            url: item.url,
-            videoId: item.videoId,
-            thumbnailUrl: item.thumbnailUrl,
-            participantPosition: i + 1,
-            totalParticipants: participants.length,
-          ),
-        );
+
+      if (item == null) {
+        i += 1;
+        continue;
       }
+
+      if (item.isBack) {
+        if (i == 0) {
+          return;
+        }
+        newPlaylist.removeWhere(
+          (playlistItem) => playlistItem.participantPosition == i,
+        );
+        i -= 1;
+        continue;
+      }
+
+      newPlaylist.add(
+        PlaylistItem(
+          participant: item.participant,
+          url: item.url,
+          videoId: item.videoId,
+          thumbnailUrl: item.thumbnailUrl,
+          participantPosition: i + 1,
+          totalParticipants: participants.length,
+        ),
+      );
+      i += 1;
     }
 
     if (newPlaylist.isNotEmpty) {
@@ -868,6 +885,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     await showModalBottomSheet(
       context: context,
       backgroundColor: _seasonalSurfaceColor,
+      useSafeArea: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
@@ -875,75 +893,78 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
         double localBoost = _volumeBoost;
         return StatefulBuilder(
           builder: (context, setSheetState) {
-            return Padding(
-              padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Volume Booster',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: _seasonalSecondaryColor,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Aumenta il volume manualmente per il brano corrente.',
-                    style: TextStyle(color: Colors.white.withOpacity(0.8)),
-                  ),
-                  const SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'Boost: x${localBoost.toStringAsFixed(2)}',
-                        style: const TextStyle(color: Colors.white),
+            return SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Volume Booster',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: _seasonalSecondaryColor,
                       ),
-                      TextButton(
-                        onPressed: () {
-                          setSheetState(() => localBoost = 1.0);
-                          _setVolumeBoost(1.0);
-                        },
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Aumenta il volume manualmente per il brano corrente.',
+                      style: TextStyle(color: Colors.white.withOpacity(0.8)),
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Boost: x${localBoost.toStringAsFixed(2)}',
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                        TextButton(
+                          onPressed: () {
+                            setSheetState(() => localBoost = 1.0);
+                            _setVolumeBoost(1.0);
+                          },
+                          child: const Text(
+                            'Reset',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                        ),
+                      ],
+                    ),
+                    Slider(
+                      value: localBoost,
+                      min: 1.0,
+                      max: 8.0,
+                      divisions: 28,
+                      label: 'x${localBoost.toStringAsFixed(2)}',
+                      activeColor: _seasonalButtonColor,
+                      inactiveColor: _seasonalButtonColor.withOpacity(0.4),
+                      onChanged: (value) {
+                        setSheetState(() => localBoost = value);
+                        _setVolumeBoost(value);
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    Center(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: OutlinedButton.styleFrom(
+                          side: BorderSide(color: _seasonalButtonColor),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                        ),
                         child: const Text(
-                          'Reset',
+                          'Chiudi',
                           style: TextStyle(color: Colors.white),
                         ),
                       ),
-                    ],
-                  ),
-                  Slider(
-                    value: localBoost,
-                    min: 1.0,
-                    max: 8.0,
-                    divisions: 28,
-                    label: 'x${localBoost.toStringAsFixed(2)}',
-                    activeColor: _seasonalButtonColor,
-                    inactiveColor: _seasonalButtonColor.withOpacity(0.4),
-                    onChanged: (value) {
-                      setSheetState(() => localBoost = value);
-                      _setVolumeBoost(value);
-                    },
-                  ),
-                  const SizedBox(height: 10),
-                  Center(
-                    child: OutlinedButton(
-                      onPressed: () => Navigator.pop(context),
-                      style: OutlinedButton.styleFrom(
-                        side: BorderSide(color: _seasonalButtonColor),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                      ),
-                      child: const Text(
-                        'Chiudi',
-                        style: TextStyle(color: Colors.white),
-                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             );
           },
@@ -1321,6 +1342,9 @@ class PlaylistItem {
   final String? thumbnailUrl;
   final int? participantPosition;
   final int? totalParticipants;
+  final bool isCancelled;
+  final bool isBack;
+
   PlaylistItem({
     required this.participant,
     required this.url,
@@ -1328,7 +1352,17 @@ class PlaylistItem {
     this.thumbnailUrl,
     this.participantPosition,
     this.totalParticipants,
+    this.isCancelled = false,
+    this.isBack = false,
   });
+
+  static PlaylistItem cancelled(String participant) {
+    return PlaylistItem(participant: participant, url: '', isCancelled: true);
+  }
+
+  static PlaylistItem back(String participant) {
+    return PlaylistItem(participant: participant, url: '', isBack: true);
+  }
 }
 
 class TrackItem {
@@ -1636,221 +1670,236 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = widget.themeData.colorScheme;
-    return Scaffold(
-      backgroundColor: colorScheme.surface,
-      appBar: AppBar(
+    return PopScope<PlaylistItem>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        Navigator.of(context).pop(PlaylistItem.back(widget.participantName));
+      },
+      child: Scaffold(
         backgroundColor: colorScheme.surface,
-        elevation: 0,
-        centerTitle: true,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            Text(
-              'Cerca per ${widget.participantName}',
-              style: const TextStyle(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Scegli un video YouTube',
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.75),
-                fontSize: 13,
+        appBar: AppBar(
+          backgroundColor: colorScheme.surface,
+          elevation: 0,
+          automaticallyImplyLeading: false,
+          centerTitle: true,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back, color: Colors.white),
+            onPressed: () => Navigator.of(
+              context,
+            ).pop(PlaylistItem.back(widget.participantName)),
+          ),
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Text(
+                'Cerca per ${widget.participantName}',
+                style: const TextStyle(fontWeight: FontWeight.w700),
               ),
+              const SizedBox(height: 4),
+              Text(
+                'Scegli un video YouTube',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.75),
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, null),
+              child: const Text('Salta', style: TextStyle(color: Colors.white)),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, null),
-            child: const Text('Salta', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
-                ),
-                decoration: BoxDecoration(
-                  color: colorScheme.surface,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: Colors.white.withOpacity(0.08)),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _controller,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: InputDecoration(
-                          hintText: 'Cerca su YouTube',
-                          hintStyle: TextStyle(
-                            color: Colors.white.withOpacity(0.6),
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  decoration: BoxDecoration(
+                    color: colorScheme.surface,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: Colors.white.withOpacity(0.08)),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _controller,
+                          style: const TextStyle(color: Colors.white),
+                          decoration: InputDecoration(
+                            hintText: 'Cerca su YouTube',
+                            hintStyle: TextStyle(
+                              color: Colors.white.withOpacity(0.6),
+                            ),
+                            border: InputBorder.none,
                           ),
-                          border: InputBorder.none,
+                          onSubmitted: _search,
                         ),
-                        onSubmitted: _search,
+                      ),
+                      IconButton(
+                        onPressed: () => _search(_controller.text),
+                        icon: Icon(Icons.search, color: colorScheme.primary),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Risultati',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.85),
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
-                    IconButton(
-                      onPressed: () => _search(_controller.text),
-                      icon: Icon(Icons.search, color: colorScheme.primary),
+                    TextButton.icon(
+                      onPressed: _pasteLink,
+                      icon: Icon(Icons.link, color: colorScheme.primary),
+                      label: Text(
+                        'Incolla link',
+                        style: TextStyle(color: colorScheme.primary),
+                      ),
+                      style: TextButton.styleFrom(
+                        backgroundColor: Colors.white.withOpacity(0.05),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
                     ),
                   ],
                 ),
-              ),
-              const SizedBox(height: 14),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Risultati',
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.85),
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  TextButton.icon(
-                    onPressed: _pasteLink,
-                    icon: Icon(Icons.link, color: colorScheme.primary),
-                    label: Text(
-                      'Incolla link',
-                      style: TextStyle(color: colorScheme.primary),
-                    ),
-                    style: TextButton.styleFrom(
-                      backgroundColor: Colors.white.withOpacity(0.05),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              Expanded(
-                child: _isSearching
-                    ? const Center(child: CircularProgressIndicator())
-                    : _results.isEmpty
-                    ? Center(
-                        child: Text(
-                          'Nessun risultato. Scrivi qualcosa sopra per cercare.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.7),
+                const SizedBox(height: 10),
+                Expanded(
+                  child: _isSearching
+                      ? const Center(child: CircularProgressIndicator())
+                      : _results.isEmpty
+                      ? Center(
+                          child: Text(
+                            'Nessun risultato. Scrivi qualcosa sopra per cercare.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.white.withOpacity(0.7),
+                            ),
                           ),
-                        ),
-                      )
-                    : ListView.separated(
-                        itemCount: _results.length,
-                        separatorBuilder: (context, index) =>
-                            const SizedBox(height: 10),
-                        itemBuilder: (context, index) {
-                          var video = _results[index];
-                          return Material(
-                            color: colorScheme.surface,
-                            borderRadius: BorderRadius.circular(18),
-                            child: InkWell(
+                        )
+                      : ListView.separated(
+                          itemCount: _results.length,
+                          separatorBuilder: (context, index) =>
+                              const SizedBox(height: 10),
+                          itemBuilder: (context, index) {
+                            var video = _results[index];
+                            return Material(
+                              color: colorScheme.surface,
                               borderRadius: BorderRadius.circular(18),
-                              onTap: () async {
-                                if (video.duration != null &&
-                                    video.duration! >
-                                        const Duration(minutes: 5)) {
-                                  bool? confirm = await showDialog<bool>(
-                                    context: context,
-                                    builder: (context) => AlertDialog(
-                                      title: const Text("Canzone lunga"),
-                                      content: const Text(
-                                        "La canzone è più lunga di 5 minuti. Vuoi aggiungerla comunque?",
-                                      ),
-                                      actions: [
-                                        TextButton(
-                                          onPressed: () =>
-                                              Navigator.pop(context, false),
-                                          child: const Text("No"),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(18),
+                                onTap: () async {
+                                  if (video.duration != null &&
+                                      video.duration! >
+                                          const Duration(minutes: 5)) {
+                                    bool? confirm = await showDialog<bool>(
+                                      context: context,
+                                      builder: (context) => AlertDialog(
+                                        title: const Text('Canzone lunga'),
+                                        content: const Text(
+                                          'La canzone è più lunga di 5 minuti. Vuoi aggiungerla comunque?',
                                         ),
-                                        TextButton(
-                                          onPressed: () =>
-                                              Navigator.pop(context, true),
-                                          child: const Text("Sì"),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                  if (confirm != true) return;
-                                }
-                                if (!mounted) return;
-                                Navigator.pop(
-                                  context,
-                                  PlaylistItem(
-                                    participant: widget.participantName,
-                                    url: video.url,
-                                    videoId: video.id.value,
-                                    thumbnailUrl: video.thumbnails.mediumResUrl,
-                                  ),
-                                );
-                              },
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 14,
-                                ),
-                                child: Row(
-                                  children: [
-                                    ClipRRect(
-                                      borderRadius: BorderRadius.circular(14),
-                                      child: Image.network(
-                                        video.thumbnails.lowResUrl,
-                                        width: 82,
-                                        height: 58,
-                                        fit: BoxFit.cover,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            video.title,
-                                            maxLines: 2,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                              fontWeight: FontWeight.w600,
-                                            ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, false),
+                                            child: const Text('No'),
                                           ),
-                                          const SizedBox(height: 6),
-                                          Text(
-                                            video.duration
-                                                    ?.toString()
-                                                    .split('.')
-                                                    .first ??
-                                                "??:??",
-                                            style: TextStyle(
-                                              color: Colors.white.withOpacity(
-                                                0.7,
-                                              ),
-                                              fontSize: 13,
-                                            ),
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, true),
+                                            child: const Text('Sì'),
                                           ),
                                         ],
                                       ),
+                                    );
+                                    if (confirm != true) return;
+                                  }
+                                  if (!mounted) return;
+                                  Navigator.pop(
+                                    context,
+                                    PlaylistItem(
+                                      participant: widget.participantName,
+                                      url: video.url,
+                                      videoId: video.id.value,
+                                      thumbnailUrl:
+                                          video.thumbnails.mediumResUrl,
                                     ),
-                                  ],
+                                  );
+                                },
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 14,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      ClipRRect(
+                                        borderRadius: BorderRadius.circular(14),
+                                        child: Image.network(
+                                          video.thumbnails.lowResUrl,
+                                          width: 82,
+                                          height: 58,
+                                          fit: BoxFit.cover,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              video.title,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Text(
+                                              video.duration
+                                                      ?.toString()
+                                                      .split('.')
+                                                      .first ??
+                                                  '??:??',
+                                              style: TextStyle(
+                                                color: Colors.white.withOpacity(
+                                                  0.7,
+                                                ),
+                                                fontSize: 13,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
-                            ),
-                          );
-                        },
-                      ),
-              ),
-            ],
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
