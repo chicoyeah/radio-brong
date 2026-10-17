@@ -1603,15 +1603,32 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
       _isSearching = true;
       _results = [];
     });
+    const maxAttempts = 3;
     try {
-      var searchList = await _yt.search.getVideos(query);
-      setState(() {
-        _results = searchList.take(5).toList();
-      });
-    } catch (e) {
-      _showErrorDialog("Errore ricerca", "Impossibile cercare su YouTube.");
+      for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          var searchList = await _yt.search.getVideos(query);
+          if (!mounted) return;
+          setState(() {
+            _results = searchList.take(5).toList();
+          });
+          break;
+        } catch (e) {
+          if (attempt == maxAttempts) {
+            if (mounted) {
+              _showErrorDialog(
+                "Errore ricerca",
+                "Impossibile cercare su YouTube.",
+              );
+            }
+          } else {
+            await Future.delayed(Duration(milliseconds: 500 * attempt));
+            if (!mounted) return;
+          }
+        }
+      }
     } finally {
-      setState(() => _isSearching = false);
+      if (mounted) setState(() => _isSearching = false);
     }
   }
 
