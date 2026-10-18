@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
@@ -207,6 +208,10 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
   Timer? _videoStateTimer;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   bool _isOffline = false;
+  bool _isShowingOfflineError = false;
+  bool _ageRestrictionNoticeShown = false;
+  bool _ageRestrictedRedirectAttempted = false;
+  bool _pendingAgeRestrictionLoginCheck = false;
   double _volumeBoost = 1.0;
   final CheckpointStorage _checkpointStorage = CheckpointStorage();
   CheckpointData? _checkpoint;
@@ -310,6 +315,11 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
           if (message.message == 'videoEnded') {
             debugPrint("Video ended via JS channel");
             _nextTrack();
+          } else if (message.message == 'ageRestrictedLoginRequired') {
+            _pendingAgeRestrictionLoginCheck = false;
+            _showAgeRestrictionLoginNotice();
+          } else if (message.message == 'openAgeRestrictedVideoOnYouTube') {
+            _openAgeRestrictedVideoOnYouTube();
           } else if (message.message == 'videoPlaying') {
             if (!_isTransitioning) _audioHandler.play();
           } else if (message.message == 'videoPaused') {
@@ -323,18 +333,117 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       )
       ..setNavigationDelegate(
         NavigationDelegate(
+          onPageStarted: (_) {
+            if (_isShowingOfflineError) {
+              setState(() => _isShowingOfflineError = false);
+            }
+          },
           onPageFinished: (String url) {
             debugPrint('Page finished loading: $url');
+            _checkPendingAgeRestrictionLogin(url);
             setState(() {
               _isTransitioning = false;
             });
             _webViewController.runJavaScript("""
               (function() {
+                function checkAgeLoginPrompt() {
+                  var text = document.body ? document.body.innerText : '';
+                  function collectShadowText(root) {
+                    var elements = root.querySelectorAll('*');
+                    for (var i = 0; i < elements.length; i++) {
+                      if (!elements[i].shadowRoot) continue;
+                      text += ' ' + (elements[i].shadowRoot.innerText || '');
+                      collectShadowText(elements[i].shadowRoot);
+                    }
+                  }
+                  collectShadowText(document);
+                  text = text.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/[’‘]/g, String.fromCharCode(39)).replace(/\\s+/g, ' ');
+                  var requiresAgeLogin = /accedi per confermare.{0,40}eta|sign in to confirm.{0,40}age|log in to confirm.{0,40}age/.test(text);
+                  if (requiresAgeLogin && !window._radioAgeRestrictionNoticeSent) {
+                    window._radioAgeRestrictionNoticeSent = true;
+                    FlutterRadio.postMessage('ageRestrictedLoginRequired');
+                  }
+                }
+
                 function setupVideo() {
+                  checkAgeLoginPrompt();
+                  var adultConfirmationText = 'capisco e desidero procedere';
+                  function findAdultConfirmationButton(root) {
+                    var buttons = root.querySelectorAll('button, [role="button"], a, tp-yt-paper-button, yt-button-shape');
+                    var customButton = null;
+                    for (var i = 0; i < buttons.length; i++) {
+                      var button = buttons[i];
+                      var label = ((button.innerText || button.textContent || '') + ' ' +
+                        (button.getAttribute('aria-label') || '')).toLowerCase().replace(/\\s+/g, ' ').trim();
+                      var rect = button.getBoundingClientRect();
+                      if (label.includes(adultConfirmationText) && rect.width > 0 && rect.height > 0) {
+                        if (button.matches('button, [role="button"], a')) return button;
+                        customButton = customButton || button;
+                      }
+                    }
+                    var hosts = root.querySelectorAll('*');
+                    for (var j = 0; j < hosts.length; j++) {
+                      if (!hosts[j].shadowRoot) continue;
+                      var shadowButton = findAdultConfirmationButton(hosts[j].shadowRoot);
+                      if (shadowButton) return shadowButton;
+                    }
+                    return customButton;
+                  }
+                  var confirmationButton = findAdultConfirmationButton(document);
+                  if (confirmationButton && !window._radioAdultConfirmationClicked) {
+                    window._radioAdultConfirmationClicked = true;
+                    console.log('Adult content confirmation: proceeding');
+                    confirmationButton.click();
+                  } else if (!confirmationButton) {
+                    window._radioAdultConfirmationClicked = false;
+                  }
+
+                  var pageText = (document.body ? document.body.innerText : '').toLowerCase().replace(/\\s+/g, ' ');
+                  var ageError = document.querySelector('.ytp-error, .ytp-error-content, .ytp-error-message-container, .yt-playability-error-supported-renderers');
+                  var ageErrorText = ageError ? ageError.innerText.toLowerCase().replace(/\\s+/g, ' ') : '';
+                  pageText += ' ' + ageErrorText;
+                  var isAgeRestricted = /age[- ]restricted|age restriction|spiacenti.{0,120}limiti di età|questi contenuti.{0,120}limiti di età|sorry.{0,120}age restricted|confirm your age|accedi per confermare l['’]et[aà]|accedi per confermare la tua età|conferma(re)? la tua età|confermare la tua età|video con limiti di età/.test(pageText);
+
+                  if (isAgeRestricted) {
+                    var needsAgeConfirmationLogin = /accedi per confermare l['’]et[aà]|sign in to confirm your age|log in to confirm your age/.test(pageText);
+                    if (needsAgeConfirmationLogin && !window._radioAgeRestrictionNoticeSent) {
+                      window._radioAgeRestrictionNoticeSent = true;
+                      FlutterRadio.postMessage('ageRestrictedLoginRequired');
+                    }
+                    if ((location.hostname === 'youtube.com' || location.hostname === 'www.youtube.com') && location.pathname === '/watch') return;
+                    if (!window._radioAgeRestrictedRedirectSent) {
+                      window._radioAgeRestrictedRedirectSent = true;
+                      FlutterRadio.postMessage('openAgeRestrictedVideoOnYouTube');
+                    }
+                    return;
+                  }
+                  window._radioAgeRestrictedRedirectSent = false;
+                  window._radioAgeRestrictionNoticeSent = false;
+
                   var v = document.querySelector('video');
                   if (v) {
                     if (v.muted) v.muted = false;
                     if (v.volume === 0) v.volume = 1.0;
+
+                    window._radioAdPlaybackUntil = window._radioAdPlaybackUntil || 0;
+                    window._radioIsAdPlayback = function() {
+                      var player = document.querySelector('.html5-video-player, #movie_player');
+                      var adIsActive = !!(player && (
+                        player.classList.contains('ad-showing') ||
+                        player.classList.contains('ad-interrupting') ||
+                        player.classList.contains('ad-showing-skip-button')
+                      ));
+                      if (adIsActive) window._radioAdPlaybackUntil = Date.now() + 2000;
+                      return adIsActive || Date.now() < window._radioAdPlaybackUntil;
+                    };
+                    if (!window._radioAdPlaybackWatcher) {
+                      window._radioAdPlaybackWatcher = window.setInterval(function() {
+                        if (window._radioIsAdPlayback) window._radioIsAdPlayback();
+                      }, 200);
+                    }
+                    function isAdPlayback() {
+                      return window._radioIsAdPlayback();
+                    }
                     
                     if (!v._radioSetup) {
                       v._radioSetup = true;
@@ -366,16 +475,22 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                       }
                       
                       v.addEventListener('ended', function() {
+                        if (isAdPlayback()) {
+                          console.log('Ad playback ended; keeping current track');
+                          return;
+                        }
                         console.log('Video ended event fired');
                         FlutterRadio.postMessage('videoEnded');
                       });
 
                       v.addEventListener('play', function() {
+                        if (isAdPlayback()) return;
                         v._retryCount = 0;
                         FlutterRadio.postMessage('videoPlaying');
                       });
 
                       v.addEventListener('pause', function() {
+                        if (isAdPlayback()) return;
                         FlutterRadio.postMessage('videoPaused');
                       });
 
@@ -385,6 +500,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                       });
 
                       v.addEventListener('timeupdate', function() {
+                        if (isAdPlayback()) return;
                         if (v.duration > 1 && v.currentTime > 0 && v.currentTime >= v.duration - 0.3) {
                           if (!v._endedSent) {
                             v._endedSent = true;
@@ -431,7 +547,10 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                                   txt.includes('watch on youtube') ||
                                   txt.includes('guarda su youtube') ||
                                   txt.includes('disabilitata') ||
-                                  txt.includes('non è disponibile');
+                                  txt.includes('non è disponibile') ||
+                                  txt.includes('age-restricted') ||
+                                  txt.includes('age restricted') ||
+                                  txt.includes('conferma la tua età');
 
                   if ((errVisible && hasErrTxt) || (btnVisible && hasErrTxt)) {
                     console.log('Unavailable video detected');
@@ -441,8 +560,28 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                 setupVideo();
                 var observer = new MutationObserver(setupVideo);
                 observer.observe(document.body, { childList: true, subtree: true });
+                if (!window._radioAgeLoginPromptPoller) {
+                  window._radioAgeLoginPromptPoller = window.setInterval(checkAgeLoginPrompt, 500);
+                }
               })();
             """);
+          },
+          onWebResourceError: (error) {
+            if (error.isForMainFrame != true ||
+                !{
+                  WebResourceErrorType.connect,
+                  WebResourceErrorType.hostLookup,
+                  WebResourceErrorType.io,
+                  WebResourceErrorType.timeout,
+                }.contains(error.errorType)) {
+              return;
+            }
+            debugPrint(
+              'Caricamento pagina fallito per un errore di rete: ${error.description}',
+            );
+            if (mounted) {
+              setState(() => _isShowingOfflineError = true);
+            }
           },
         ),
       );
@@ -492,7 +631,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       final bool isConnected = results.any(
         (result) => result != ConnectivityResult.none,
       );
-      if (isConnected && _isOffline) {
+      if (isConnected && _isOffline && _isShowingOfflineError) {
         _reloadIfNecessary();
       }
       setState(() {
@@ -502,7 +641,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
   }
 
   void _reloadIfNecessary() {
-    if (_currentIndex != -1) {
+    if (_currentIndex != -1 && _isShowingOfflineError) {
+      _isShowingOfflineError = false;
       _webViewController.reload();
     }
   }
@@ -523,18 +663,19 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       if (_currentIndex == -1 || _isProcessing || _isTransitioning) return;
       try {
         final result = await _webViewController.runJavaScriptReturningResult(
-          "var v = document.querySelector('video'); v ? (v.ended || (v.duration > 1 && v.currentTime > 0 && v.currentTime >= v.duration - 0.5)) + ',' + v.currentTime : 'false,0'",
+          "var v = document.querySelector('video'); var ad = window._radioIsAdPlayback ? window._radioIsAdPlayback() : false; v ? ad + ',' + (v.ended || (v.duration > 1 && v.currentTime > 0 && v.currentTime >= v.duration - 0.5)) + ',' + v.currentTime : 'false,false,0'",
         );
 
         final parts = result.toString().replaceAll('"', '').split(',');
-        if (parts.length >= 2) {
-          final bool ended = parts[0] == 'true';
-          final double currentTime = double.tryParse(parts[1]) ?? 0;
+        if (parts.length >= 3) {
+          final bool isAdPlayback = parts[0] == 'true';
+          final bool ended = parts[1] == 'true';
+          final double currentTime = double.tryParse(parts[2]) ?? 0;
 
-          if (ended) {
+          if (ended && !isAdPlayback) {
             debugPrint("Video ended detected via polling");
             _nextTrack();
-          } else {
+          } else if (!isAdPlayback) {
             _audioHandler.updatePosition(
               Duration(seconds: currentTime.toInt()),
             );
@@ -665,6 +806,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       _isProcessing = false;
       _isTransitioning = true;
       _autoRedirectAttempted = false;
+      _ageRestrictionNoticeShown = false;
+      _ageRestrictedRedirectAttempted = false;
       _volumeBoost = 1.0;
       _hasCheckpoint = false;
     });
@@ -850,6 +993,9 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     setState(() {
       _isTransitioning = true;
       _autoRedirectAttempted = false;
+      _ageRestrictedRedirectAttempted = false;
+      _ageRestrictionNoticeShown = false;
+      _pendingAgeRestrictionLoginCheck = false;
       _volumeBoost = 1.0;
     });
     TrackItem item = _tracks[_currentIndex];
@@ -867,9 +1013,78 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
   void _handleUnavailableVideo() {
     if (_autoRedirectAttempted || _currentIndex == -1) return;
     _autoRedirectAttempted = true;
+    _pendingAgeRestrictionLoginCheck = true;
     TrackItem item = _tracks[_currentIndex];
     final youtubeUrl = 'https://www.youtube.com/watch?v=${item.videoId}';
     _webViewController.loadRequest(Uri.parse(youtubeUrl));
+  }
+
+  void _openAgeRestrictedVideoOnYouTube() {
+    if (_ageRestrictedRedirectAttempted || _currentIndex == -1) return;
+    _ageRestrictedRedirectAttempted = true;
+    _pendingAgeRestrictionLoginCheck = true;
+    final item = _tracks[_currentIndex];
+    final youtubeUrl = Uri.https('www.youtube.com', '/watch', {
+      'v': item.videoId,
+    });
+    _webViewController.loadRequest(youtubeUrl);
+  }
+
+  Future<void> _checkPendingAgeRestrictionLogin(String url) async {
+    if (!_pendingAgeRestrictionLoginCheck) return;
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        (uri.host != 'youtube.com' && uri.host != 'www.youtube.com') ||
+        uri.path != '/watch') {
+      return;
+    }
+
+    try {
+      for (var attempt = 0; attempt < 40; attempt++) {
+        final result = await _webViewController.runJavaScriptReturningResult(
+          "(() => { const value = window.ytcfg && typeof window.ytcfg.get === 'function' ? window.ytcfg.get('LOGGED_IN') : null; if (value === true || value === 1 || (typeof value === 'string' && ['true', '1'].includes(value.toLowerCase()))) return 'logged-in'; let text = (document.body && document.body.innerText || '') + ' ' + (document.querySelector('.ytp-error, .ytp-error-content, .ytp-error-message-container, .yt-playability-error-supported-renderers')?.innerText || ''); const collectShadowText = root => { for (const node of root.querySelectorAll('*')) if (node.shadowRoot) { text += ' ' + (node.shadowRoot.innerText || ''); collectShadowText(node.shadowRoot); } }; collectShadowText(document); text = text.toLowerCase().normalize('NFD').replace(/[\\\\u0300-\\\\u036f]/g, '').replace(/[’‘]/g, \"'\").replace(/\\\\s+/g, ' '); if (/accedi per confermare l'eta|accedi per confermare eta|sign in to confirm your age|log in to confirm your age/.test(text)) return 'logged-out'; return 'unknown'; })()",
+        );
+        final loginState = result.toString().replaceAll('"', '').toLowerCase();
+        if (loginState == 'logged-in') {
+          _pendingAgeRestrictionLoginCheck = false;
+          return;
+        }
+        if (loginState == 'logged-out') {
+          _pendingAgeRestrictionLoginCheck = false;
+          _showAgeRestrictionLoginNotice();
+          return;
+        }
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (!mounted || !_pendingAgeRestrictionLoginCheck) return;
+      }
+      debugPrint(
+        'Stato di accesso YouTube non rilevabile dopo il redirect age-restricted.',
+      );
+      _pendingAgeRestrictionLoginCheck = false;
+    } catch (error) {
+      debugPrint('Impossibile verificare il login YouTube: $error');
+      _pendingAgeRestrictionLoginCheck = false;
+    }
+  }
+
+  void _showAgeRestrictionLoginNotice() {
+    if (!mounted || _ageRestrictionNoticeShown) return;
+    _ageRestrictionNoticeShown = true;
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Accesso a YouTube richiesto'),
+        content: const Text(
+          'Per guardare i video con limiti di età devi accedere a YouTube.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Ok'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _setVolumeBoost(double boost) {
@@ -1572,6 +1787,15 @@ class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
   void _addParticipant() {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
+    final normalizedName = text.toLowerCase();
+    if (_participants.any(
+      (participant) => participant.trim().toLowerCase() == normalizedName,
+    )) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text('Hai già aggiunto "$text".')));
+      return;
+    }
     setState(() {
       _participants.add(text);
       _controller.clear();
@@ -1595,11 +1819,68 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
   final YoutubeExplode _yt = YoutubeExplode();
   final TextEditingController _controller = TextEditingController();
   List<Video> _results = [];
+  List<String> _suggestions = [];
+  Timer? _suggestionDebounce;
+  int _suggestionRequestId = 0;
   bool _isSearching = false;
+  String _lastSearchQuery = '';
+
+  void _onQueryChanged(String query) {
+    _suggestionDebounce?.cancel();
+    final requestId = ++_suggestionRequestId;
+    final normalizedQuery = query.trim();
+    setState(() => _suggestions = []);
+    if (normalizedQuery.length < 2) {
+      return;
+    }
+    _suggestionDebounce = Timer(const Duration(milliseconds: 300), () {
+      _loadSuggestions(normalizedQuery, requestId);
+    });
+  }
+
+  Future<void> _loadSuggestions(String query, int requestId) async {
+    try {
+      final response = await http
+          .get(
+            Uri.https('suggestqueries.google.com', '/complete/search', {
+              'client': 'firefox',
+              'ds': 'yt',
+              'hl': 'it',
+              'q': query,
+            }),
+          )
+          .timeout(const Duration(seconds: 5));
+      if (response.statusCode != 200) {
+        debugPrint(
+          'Suggerimenti YouTube non disponibili: HTTP ${response.statusCode}',
+        );
+        return;
+      }
+      final decoded = jsonDecode(response.body);
+      if (decoded is! List || decoded.length < 2 || decoded[1] is! List) {
+        debugPrint('Risposta dei suggerimenti YouTube non valida.');
+        return;
+      }
+      final suggestions = (decoded[1] as List)
+          .whereType<String>()
+          .where((suggestion) => suggestion.isNotEmpty)
+          .take(6)
+          .toList();
+      if (!mounted || requestId != _suggestionRequestId) return;
+      setState(() => _suggestions = suggestions);
+    } catch (error) {
+      debugPrint('Impossibile caricare i suggerimenti YouTube: $error');
+    }
+  }
 
   Future<void> _search(String query) async {
-    if (query.isEmpty) return;
+    final normalizedQuery = query.trim();
+    if (normalizedQuery.isEmpty) return;
+    _suggestionDebounce?.cancel();
+    _suggestionRequestId++;
     setState(() {
+      _lastSearchQuery = normalizedQuery;
+      _suggestions = [];
       _isSearching = true;
       _results = [];
     });
@@ -1607,7 +1888,7 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
     try {
       for (var attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
-          var searchList = await _yt.search.getVideos(query);
+          var searchList = await _yt.search.getVideos(normalizedQuery);
           if (!mounted) return;
           setState(() {
             _results = searchList.take(5).toList();
@@ -1630,6 +1911,51 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
     } finally {
       if (mounted) setState(() => _isSearching = false);
     }
+  }
+
+  Future<void> _openMoreResults() async {
+    final video = await Navigator.of(context).push<Video>(
+      MaterialPageRoute(
+        builder: (context) => YoutubeWebSearchPage(
+          query: _lastSearchQuery,
+          yt: _yt,
+          themeData: widget.themeData,
+        ),
+      ),
+    );
+    if (!mounted || video == null) return;
+    if (video.duration != null &&
+        video.duration! > const Duration(minutes: 5)) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Canzone lunga'),
+          content: const Text(
+            'La canzone è più lunga di 5 minuti. Vuoi aggiungerla comunque?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('No'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Sì'),
+            ),
+          ],
+        ),
+      );
+      if (confirm != true || !mounted) return;
+    }
+    Navigator.pop(
+      context,
+      PlaylistItem(
+        participant: widget.participantName,
+        url: video.url,
+        videoId: video.id.value,
+        thumbnailUrl: video.thumbnails.mediumResUrl,
+      ),
+    );
   }
 
   Future<void> _pasteLink() async {
@@ -1679,6 +2005,7 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
 
   @override
   void dispose() {
+    _suggestionDebounce?.cancel();
     _yt.close();
     _controller.dispose();
     super.dispose();
@@ -1758,6 +2085,7 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
                             ),
                             border: InputBorder.none,
                           ),
+                          onChanged: _onQueryChanged,
                           onSubmitted: _search,
                         ),
                       ),
@@ -1768,6 +2096,40 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
                     ],
                   ),
                 ),
+                if (_suggestions.isNotEmpty)
+                  Container(
+                    margin: const EdgeInsets.only(top: 8),
+                    decoration: BoxDecoration(
+                      color: colorScheme.surface,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.white.withOpacity(0.08)),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: _suggestions.map((suggestion) {
+                        return ListTile(
+                          dense: true,
+                          leading: Icon(
+                            Icons.search,
+                            color: Colors.white.withOpacity(0.65),
+                          ),
+                          title: Text(
+                            suggestion,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                          onTap: () {
+                            _controller.text = suggestion;
+                            _controller.selection = TextSelection.collapsed(
+                              offset: suggestion.length,
+                            );
+                            _search(suggestion);
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ),
                 const SizedBox(height: 14),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1801,124 +2163,370 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
                       ? const Center(child: CircularProgressIndicator())
                       : _results.isEmpty
                       ? Center(
-                          child: Text(
-                            'Nessun risultato. Scrivi qualcosa sopra per cercare.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: Colors.white.withOpacity(0.7),
-                            ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                _lastSearchQuery.isEmpty
+                                    ? 'Nessun risultato. Scrivi qualcosa sopra per cercare.'
+                                    : 'Nessun risultato per "$_lastSearchQuery". Vuoi cercarlo su YouTube?',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.white.withOpacity(0.7),
+                                ),
+                              ),
+                              if (_lastSearchQuery.isNotEmpty) ...[
+                                const SizedBox(height: 12),
+                                OutlinedButton.icon(
+                                  onPressed: _openMoreResults,
+                                  icon: Icon(
+                                    Icons.open_in_browser,
+                                    color: colorScheme.primary,
+                                  ),
+                                  label: Text(
+                                    'Cerca su YouTube',
+                                    style: TextStyle(
+                                      color: colorScheme.primary,
+                                    ),
+                                  ),
+                                  style: OutlinedButton.styleFrom(
+                                    backgroundColor: Colors.white.withOpacity(
+                                      0.05,
+                                    ),
+                                    side: BorderSide(
+                                      color: colorScheme.primary.withOpacity(
+                                        0.5,
+                                      ),
+                                    ),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(16),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
                         )
-                      : ListView.separated(
-                          itemCount: _results.length,
-                          separatorBuilder: (context, index) =>
-                              const SizedBox(height: 10),
-                          itemBuilder: (context, index) {
-                            var video = _results[index];
-                            return Material(
-                              color: colorScheme.surface,
-                              borderRadius: BorderRadius.circular(18),
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(18),
-                                onTap: () async {
-                                  if (video.duration != null &&
-                                      video.duration! >
-                                          const Duration(minutes: 5)) {
-                                    bool? confirm = await showDialog<bool>(
-                                      context: context,
-                                      builder: (context) => AlertDialog(
-                                        title: const Text('Canzone lunga'),
-                                        content: const Text(
-                                          'La canzone è più lunga di 5 minuti. Vuoi aggiungerla comunque?',
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                            onPressed: () =>
-                                                Navigator.pop(context, false),
-                                            child: const Text('No'),
+                      : Column(
+                          children: [
+                            Expanded(
+                              child: ListView.separated(
+                                itemCount: _results.length,
+                                separatorBuilder: (context, index) =>
+                                    const SizedBox(height: 10),
+                                itemBuilder: (context, index) {
+                                  var video = _results[index];
+                                  return Material(
+                                    color: colorScheme.surface,
+                                    borderRadius: BorderRadius.circular(18),
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(18),
+                                      onTap: () async {
+                                        if (video.duration != null &&
+                                            video.duration! >
+                                                const Duration(minutes: 5)) {
+                                          bool?
+                                          confirm = await showDialog<bool>(
+                                            context: context,
+                                            builder: (context) => AlertDialog(
+                                              title: const Text(
+                                                'Canzone lunga',
+                                              ),
+                                              content: const Text(
+                                                'La canzone è più lunga di 5 minuti. Vuoi aggiungerla comunque?',
+                                              ),
+                                              actions: [
+                                                TextButton(
+                                                  onPressed: () =>
+                                                      Navigator.pop(
+                                                        context,
+                                                        false,
+                                                      ),
+                                                  child: const Text('No'),
+                                                ),
+                                                TextButton(
+                                                  onPressed: () =>
+                                                      Navigator.pop(
+                                                        context,
+                                                        true,
+                                                      ),
+                                                  child: const Text('Sì'),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                          if (confirm != true) return;
+                                        }
+                                        if (!mounted) return;
+                                        Navigator.pop(
+                                          context,
+                                          PlaylistItem(
+                                            participant: widget.participantName,
+                                            url: video.url,
+                                            videoId: video.id.value,
+                                            thumbnailUrl:
+                                                video.thumbnails.mediumResUrl,
                                           ),
-                                          TextButton(
-                                            onPressed: () =>
-                                                Navigator.pop(context, true),
-                                            child: const Text('Sì'),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                    if (confirm != true) return;
-                                  }
-                                  if (!mounted) return;
-                                  Navigator.pop(
-                                    context,
-                                    PlaylistItem(
-                                      participant: widget.participantName,
-                                      url: video.url,
-                                      videoId: video.id.value,
-                                      thumbnailUrl:
-                                          video.thumbnails.mediumResUrl,
-                                    ),
-                                  );
-                                },
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 14,
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      ClipRRect(
-                                        borderRadius: BorderRadius.circular(14),
-                                        child: Image.network(
-                                          video.thumbnails.lowResUrl,
-                                          width: 82,
-                                          height: 58,
-                                          fit: BoxFit.cover,
+                                        );
+                                      },
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 14,
                                         ),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
+                                        child: Row(
                                           children: [
-                                            Text(
-                                              video.title,
-                                              maxLines: 2,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontWeight: FontWeight.w600,
+                                            ClipRRect(
+                                              borderRadius:
+                                                  BorderRadius.circular(14),
+                                              child: Image.network(
+                                                video.thumbnails.lowResUrl,
+                                                width: 82,
+                                                height: 58,
+                                                fit: BoxFit.cover,
                                               ),
                                             ),
-                                            const SizedBox(height: 6),
-                                            Text(
-                                              video.duration
-                                                      ?.toString()
-                                                      .split('.')
-                                                      .first ??
-                                                  '??:??',
-                                              style: TextStyle(
-                                                color: Colors.white.withOpacity(
-                                                  0.7,
-                                                ),
-                                                fontSize: 13,
+                                            const SizedBox(width: 12),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Text(
+                                                    video.title,
+                                                    maxLines: 2,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 6),
+                                                  Text(
+                                                    video.duration
+                                                            ?.toString()
+                                                            .split('.')
+                                                            .first ??
+                                                        '??:??',
+                                                    style: TextStyle(
+                                                      color: Colors.white
+                                                          .withOpacity(0.7),
+                                                      fontSize: 13,
+                                                    ),
+                                                  ),
+                                                ],
                                               ),
                                             ),
                                           ],
                                         ),
                                       ),
-                                    ],
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            SizedBox(
+                              width: double.infinity,
+                              child: OutlinedButton.icon(
+                                onPressed: _openMoreResults,
+                                icon: Icon(
+                                  Icons.open_in_browser,
+                                  color: colorScheme.primary,
+                                ),
+                                label: Text(
+                                  'Mostra altri risultati',
+                                  style: TextStyle(color: colorScheme.primary),
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  backgroundColor: Colors.white.withOpacity(
+                                    0.05,
+                                  ),
+                                  side: BorderSide(
+                                    color: colorScheme.primary.withOpacity(0.5),
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(16),
                                   ),
                                 ),
                               ),
-                            );
-                          },
+                            ),
+                          ],
                         ),
                 ),
               ],
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class YoutubeWebSearchPage extends StatefulWidget {
+  final String query;
+  final YoutubeExplode yt;
+  final ThemeData themeData;
+
+  const YoutubeWebSearchPage({
+    super.key,
+    required this.query,
+    required this.yt,
+    required this.themeData,
+  });
+
+  @override
+  State<YoutubeWebSearchPage> createState() => _YoutubeWebSearchPageState();
+}
+
+class _YoutubeWebSearchPageState extends State<YoutubeWebSearchPage> {
+  late final WebViewController _webViewController;
+  bool _isSelectingVideo = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _webViewController = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..addJavaScriptChannel(
+        'YouTubeVideoSelection',
+        onMessageReceived: (message) {
+          _selectVideo(message.message);
+        },
+      )
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageFinished: (_) => _installVideoSelectionHandler(),
+          onNavigationRequest: (request) {
+            final videoId = _videoIdFromUrl(request.url);
+            if (videoId != null) {
+              _selectVideo(videoId);
+              return NavigationDecision.prevent;
+            }
+            return NavigationDecision.navigate;
+          },
+        ),
+      )
+      ..loadRequest(
+        Uri.https('www.youtube.com', '/results', {
+          'search_query': widget.query,
+        }),
+      );
+  }
+
+  Future<void> _installVideoSelectionHandler() async {
+    try {
+      await _webViewController.runJavaScript(r'''
+        (function() {
+          if (window._radioVideoSelectionInstalled) return;
+          window._radioVideoSelectionInstalled = true;
+          document.addEventListener('click', function(event) {
+            for (const element of event.composedPath()) {
+              if (!element || !element.href) continue;
+              let url;
+              try {
+                url = new URL(element.href, window.location.href);
+              } catch (_) {
+                continue;
+              }
+              const host = url.hostname.toLowerCase();
+              if (!['youtube.com', 'www.youtube.com', 'm.youtube.com',
+                    'youtu.be', 'www.youtube-nocookie.com'].includes(host)) {
+                continue;
+              }
+              let videoId = null;
+              if (host.endsWith('youtu.be')) {
+                videoId = url.pathname.split('/').filter(Boolean)[0];
+              } else if (url.pathname === '/watch') {
+                videoId = url.searchParams.get('v');
+              } else if (/^\/(shorts|live|embed)\//.test(url.pathname)) {
+                videoId = url.pathname.split('/')[2];
+              }
+              if (!videoId) continue;
+              event.preventDefault();
+              event.stopImmediatePropagation();
+              YouTubeVideoSelection.postMessage(videoId);
+              return;
+            }
+          }, true);
+        })();
+      ''');
+    } catch (error) {
+      debugPrint('Impossibile inizializzare la selezione YouTube: $error');
+    }
+  }
+
+  String? _videoIdFromUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return null;
+    final host = uri.host.toLowerCase();
+    if (host != 'youtube.com' &&
+        host != 'www.youtube.com' &&
+        host != 'm.youtube.com' &&
+        host != 'youtu.be' &&
+        host != 'www.youtube-nocookie.com') {
+      return null;
+    }
+    if (host.endsWith('youtu.be')) {
+      return uri.pathSegments.isEmpty ? null : uri.pathSegments.first;
+    }
+    if (uri.path == '/watch') return uri.queryParameters['v'];
+    if (uri.pathSegments.length >= 2 &&
+        const {'shorts', 'live', 'embed'}.contains(uri.pathSegments.first)) {
+      return uri.pathSegments[1];
+    }
+    return null;
+  }
+
+  Future<void> _selectVideo(String videoId) async {
+    if (_isSelectingVideo) return;
+    setState(() => _isSelectingVideo = true);
+    try {
+      final video = await widget.yt.videos.get(videoId);
+      if (!mounted) return;
+      Navigator.pop(context, video);
+    } catch (error) {
+      debugPrint('Impossibile recuperare il video selezionato: $error');
+      if (!mounted) return;
+      setState(() => _isSelectingVideo = false);
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Video non disponibile'),
+          content: const Text(
+            'Impossibile recuperare i dettagli del video selezionato.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Ok'),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = widget.themeData.colorScheme;
+    return Scaffold(
+      backgroundColor: colorScheme.surface,
+      appBar: AppBar(
+        backgroundColor: colorScheme.surface,
+        title: const Text('Altri risultati YouTube'),
+      ),
+      body: Stack(
+        children: [
+          WebViewWidget(controller: _webViewController),
+          if (_isSelectingVideo)
+            const ColoredBox(
+              color: Color(0x66000000),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+        ],
       ),
     );
   }
