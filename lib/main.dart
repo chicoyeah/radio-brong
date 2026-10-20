@@ -1,21 +1,28 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
+import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
-import 'package:flutter/services.dart'; // Import for Clipboard
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart' as ja;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:video_player/video_player.dart';
 
 import 'checkpoint_storage.dart';
+import 'spotify_utils.dart';
+import 'soundcloud_utils.dart';
 import 'update_checker.dart';
 import 'youtube_playlist_utils.dart';
 
@@ -39,9 +46,47 @@ Future<void> main() async {
 
 class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   final _player = ja.AudioPlayer();
+  String? _localAudioPath;
+  bool _completionNotified = false;
   void Function(String)? onNotificationAction;
 
   MyAudioHandler() {
+    _player.positionStream.listen(updatePosition);
+    _player.playerStateStream.listen((state) {
+      if (_localAudioPath == null) return;
+      final completed = state.processingState == ja.ProcessingState.completed;
+      playbackState.add(
+        playbackState.value.copyWith(
+          playing: state.playing,
+          updatePosition: _player.position,
+          bufferedPosition: _player.bufferedPosition,
+          processingState: switch (state.processingState) {
+            ja.ProcessingState.idle => AudioProcessingState.idle,
+            ja.ProcessingState.loading => AudioProcessingState.loading,
+            ja.ProcessingState.buffering => AudioProcessingState.buffering,
+            ja.ProcessingState.ready => AudioProcessingState.ready,
+            ja.ProcessingState.completed => AudioProcessingState.completed,
+          },
+          controls: state.playing
+              ? [
+                  MediaControl.skipToPrevious,
+                  MediaControl.pause,
+                  MediaControl.stop,
+                  MediaControl.skipToNext,
+                ]
+              : [
+                  MediaControl.skipToPrevious,
+                  MediaControl.play,
+                  MediaControl.stop,
+                  MediaControl.skipToNext,
+                ],
+        ),
+      );
+      if (completed && !_completionNotified) {
+        _completionNotified = true;
+        onNotificationAction?.call('completed');
+      }
+    });
     playbackState.add(
       PlaybackState(
         controls: [
@@ -64,6 +109,10 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
 
   @override
   Future<void> play() async {
+    if (_localAudioPath != null) {
+      unawaited(_player.play());
+      return;
+    }
     playbackState.add(
       playbackState.value.copyWith(
         playing: true,
@@ -75,10 +124,15 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         ],
       ),
     );
+    onNotificationAction?.call('play');
   }
 
   @override
   Future<void> pause() async {
+    if (_localAudioPath != null) {
+      await _player.pause();
+      return;
+    }
     playbackState.add(
       playbackState.value.copyWith(
         playing: false,
@@ -90,10 +144,15 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
         ],
       ),
     );
+    onNotificationAction?.call('pause');
   }
 
   @override
   Future<void> stop() async {
+    if (_localAudioPath != null) {
+      await _player.stop();
+      _localAudioPath = null;
+    }
     playbackState.add(
       playbackState.value.copyWith(
         playing: false,
@@ -110,6 +169,10 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   }
 
   Future<void> stopSilently() async {
+    if (_localAudioPath != null) {
+      await _player.stop();
+      _localAudioPath = null;
+    }
     playbackState.add(
       playbackState.value.copyWith(
         playing: false,
@@ -126,7 +189,41 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
 
   @override
   Future<void> seek(Duration position) async {
-    onNotificationAction?.call('seek:${position.inSeconds}');
+    if (_localAudioPath != null) {
+      await _player.seek(position);
+    } else {
+      onNotificationAction?.call('seek:${position.inSeconds}');
+    }
+  }
+
+  Future<void> prepareExternalPlayback() async {
+    _localAudioPath = null;
+    await _player.stop();
+  }
+
+  Future<void> playLocalAudio(String path, TrackItem item) async {
+    _localAudioPath = path;
+    _completionNotified = false;
+    updateMetadata(item);
+    await _player.setFilePath(path);
+    updateMetadata(item, duration: _player.duration);
+    await play();
+  }
+
+  void updateExternalPlayback(bool playing, Duration position) {
+    playbackState.add(
+      playbackState.value.copyWith(
+        playing: playing,
+        updatePosition: position,
+        processingState: AudioProcessingState.ready,
+        controls: [
+          MediaControl.skipToPrevious,
+          playing ? MediaControl.pause : MediaControl.play,
+          MediaControl.stop,
+          MediaControl.skipToNext,
+        ],
+      ),
+    );
   }
 
   @override
@@ -139,14 +236,14 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
     onNotificationAction?.call('previous');
   }
 
-  void updateMetadata(TrackItem item) {
+  void updateMetadata(TrackItem item, {Duration? duration}) {
     mediaItem.add(
       MediaItem(
         id: item.videoId,
         album: "Radio Brong",
         title: item.title,
         artist: item.participantLabel,
-        duration: item.duration,
+        duration: duration ?? item.duration,
         artUri: item.thumbnailUrl != null
             ? Uri.parse(item.thumbnailUrl!)
             : null,
@@ -157,6 +254,8 @@ class MyAudioHandler extends BaseAudioHandler with QueueHandler, SeekHandler {
   void updatePosition(Duration position) {
     playbackState.add(playbackState.value.copyWith(updatePosition: position));
   }
+
+  Future<void> disposePlayer() => _player.dispose();
 }
 
 class RadioBrongApp extends StatelessWidget {
@@ -195,6 +294,10 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       'https://www.youtube.com/playlist?list=PLBr8N5C2sDZI';
 
   late final WebViewController _webViewController;
+  bool _soundCloudPlayerActive = false;
+  Completer<void>? _blankWebViewLoadCompleter;
+  VideoPlayerController? _localVideoController;
+  String? _localVideoError;
   final YoutubeExplode _yt = YoutubeExplode();
   bool _autoRedirectAttempted = false;
 
@@ -306,7 +409,18 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
   }
 
   void _initWebView() {
-    _webViewController = WebViewController()
+    final isWebKitPlatform =
+        defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.macOS;
+    final webViewController = isWebKitPlatform
+        ? WebViewController.fromPlatformCreationParams(
+            WebKitWebViewControllerCreationParams(
+              mediaTypesRequiringUserAction: const <PlaybackMediaTypes>{},
+              allowsInlineMediaPlayback: true,
+            ),
+          )
+        : WebViewController();
+    _webViewController = webViewController
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0x00000000))
       ..addJavaScriptChannel(
@@ -315,15 +429,44 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
           if (message.message == 'videoEnded') {
             debugPrint("Video ended via JS channel");
             _nextTrack();
+          } else if (message.message == 'soundcloudFinished') {
+            _nextTrack();
           } else if (message.message == 'ageRestrictedLoginRequired') {
             _pendingAgeRestrictionLoginCheck = false;
             _showAgeRestrictionLoginNotice();
           } else if (message.message == 'openAgeRestrictedVideoOnYouTube') {
             _openAgeRestrictedVideoOnYouTube();
           } else if (message.message == 'videoPlaying') {
-            if (!_isTransitioning) _audioHandler.play();
+            if (!_isTransitioning &&
+                _currentIndex >= 0 &&
+                _currentIndex < _tracks.length) {
+              final item = _tracks[_currentIndex];
+              if (item.localPath == null) {
+                _audioHandler.play();
+              }
+            }
           } else if (message.message == 'videoPaused') {
-            if (!_isTransitioning) _audioHandler.pause();
+            if (!_isTransitioning &&
+                _currentIndex >= 0 &&
+                _currentIndex < _tracks.length) {
+              final item = _tracks[_currentIndex];
+              if (item.localPath == null) {
+                _audioHandler.pause();
+              }
+            }
+          } else if (message.message.startsWith('soundcloudDuration:')) {
+            final durationMilliseconds = int.tryParse(
+              message.message.substring('soundcloudDuration:'.length),
+            );
+            if (durationMilliseconds != null &&
+                _currentIndex >= 0 &&
+                _currentIndex < _tracks.length &&
+                _tracks[_currentIndex].isSoundCloud) {
+              _audioHandler.updateMetadata(
+                _tracks[_currentIndex],
+                duration: Duration(milliseconds: durationMilliseconds),
+              );
+            }
           } else if (message.message == 'unavailableDetected' ||
               message.message == 'unavailableDetectedNoLink') {
             debugPrint("Video unavailable detected: ${message.message}");
@@ -340,10 +483,21 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
           },
           onPageFinished: (String url) {
             debugPrint('Page finished loading: $url');
+            if (url == 'about:blank') {
+              final completer = _blankWebViewLoadCompleter;
+              if (completer != null && !completer.isCompleted) {
+                completer.complete();
+              }
+            }
             _checkPendingAgeRestrictionLogin(url);
             setState(() {
               _isTransitioning = false;
             });
+            if (_currentIndex >= 0 &&
+                _currentIndex < _tracks.length &&
+                _tracks[_currentIndex].isSoundCloud) {
+              return;
+            }
             _webViewController.runJavaScript("""
               (function() {
                 function checkAgeLoginPrompt() {
@@ -587,8 +741,10 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       );
 
     if (_webViewController.platform is AndroidWebViewController) {
-      (_webViewController.platform as AndroidWebViewController)
-          .setMediaPlaybackRequiresUserGesture(false);
+      unawaited(
+        (_webViewController.platform as AndroidWebViewController)
+            .setMediaPlaybackRequiresUserGesture(false),
+      );
     }
   }
 
@@ -598,13 +754,27 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       if (lastState == state.playing) return;
       lastState = state.playing;
 
+      if (_currentIndex >= 0 &&
+          _currentIndex < _tracks.length &&
+          _tracks[_currentIndex].localPath != null) {
+        return;
+      }
+
+      final isSoundCloudTrack =
+          _currentIndex >= 0 &&
+          _currentIndex < _tracks.length &&
+          _tracks[_currentIndex].isSoundCloud;
       if (state.playing) {
         _webViewController.runJavaScript(
-          "document.querySelector('video')?.play()",
+          isSoundCloudTrack
+              ? "if (window._radioSoundCloudWidget) window._radioSoundCloudWidget.play();"
+              : "document.querySelector('video')?.play()",
         );
       } else {
         _webViewController.runJavaScript(
-          "document.querySelector('video')?.pause()",
+          isSoundCloudTrack
+              ? "if (window._radioSoundCloudWidget) window._radioSoundCloudWidget.pause();"
+              : "document.querySelector('video')?.pause()",
         );
       }
     });
@@ -612,13 +782,40 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     _audioHandler.onNotificationAction = (String action) {
       if (action == 'next') _nextTrack();
       if (action == 'previous') _prevTrack();
-      if (action == 'stop') _internalStop();
+      if (action == 'stop') unawaited(_internalStop());
+      if (action == 'completed') _nextTrack();
+      if ((action == 'play' || action == 'pause') &&
+          _currentIndex >= 0 &&
+          _currentIndex < _tracks.length &&
+          _tracks[_currentIndex].isLocalVideo) {
+        final controller = _localVideoController;
+        if (controller?.value.isInitialized == true) {
+          if (action == 'play') {
+            unawaited(controller!.play());
+          } else {
+            unawaited(controller!.pause());
+          }
+        }
+      }
       if (action.startsWith('seek:')) {
         final seconds = int.tryParse(action.split(':')[1]);
         if (seconds != null) {
-          _webViewController.runJavaScript(
-            "document.querySelector('video').currentTime = $seconds",
-          );
+          if (_currentIndex >= 0 &&
+              _currentIndex < _tracks.length &&
+              _tracks[_currentIndex].localPath != null &&
+              _tracks[_currentIndex].isLocalVideo &&
+              _localVideoController?.value.isInitialized == true) {
+            _localVideoController!.seekTo(Duration(seconds: seconds));
+          } else if (_currentIndex >= 0 &&
+              _currentIndex < _tracks.length &&
+              _tracks[_currentIndex].localPath == null) {
+            final item = _tracks[_currentIndex];
+            _webViewController.runJavaScript(
+              item.isSoundCloud
+                  ? "if (window._radioSoundCloudWidget) window._radioSoundCloudWidget.seekTo(${seconds * 1000});"
+                  : "document.querySelector('video').currentTime = $seconds",
+            );
+          }
         }
       }
     };
@@ -652,6 +849,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     _yt.close();
     _videoStateTimer?.cancel();
     _connectivitySubscription?.cancel();
+    _localVideoController?.dispose();
+    _audioHandler.disposePlayer();
     super.dispose();
   }
 
@@ -660,8 +859,25 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     _videoStateTimer = Timer.periodic(const Duration(milliseconds: 500), (
       timer,
     ) async {
-      if (_currentIndex == -1 || _isProcessing || _isTransitioning) return;
+      if (_currentIndex == -1 ||
+          _isProcessing ||
+          _isTransitioning ||
+          _tracks[_currentIndex].localPath != null) {
+        return;
+      }
       try {
+        if (_tracks[_currentIndex].isSoundCloud) {
+          final result = await _webViewController.runJavaScriptReturningResult(
+            'window._radioSoundCloudPosition || 0',
+          );
+          final positionMilliseconds =
+              double.tryParse(result.toString())?.toInt() ?? 0;
+          _audioHandler.updatePosition(
+            Duration(milliseconds: positionMilliseconds),
+          );
+          return;
+        }
+
         final result = await _webViewController.runJavaScriptReturningResult(
           "var v = document.querySelector('video'); var ad = window._radioIsAdPlayback ? window._radioIsAdPlayback() : false; v ? ad + ',' + (v.ended || (v.duration > 1 && v.currentTime > 0 && v.currentTime >= v.duration - 0.5)) + ',' + v.currentTime : 'false,false,0'",
         );
@@ -768,6 +984,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
             durationSeconds: track.duration?.inSeconds,
             participantPosition: track.participantPosition,
             totalParticipants: track.totalParticipants,
+            localPath: track.localPath,
+            isLocalVideo: track.isLocalVideo,
           ),
         )
         .toList();
@@ -798,6 +1016,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                   : null,
               participantPosition: track.participantPosition,
               totalParticipants: track.totalParticipants,
+              localPath: track.localPath,
+              isLocalVideo: track.isLocalVideo,
             ),
           )
           .toList();
@@ -906,6 +1126,9 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
           url: item.url,
           videoId: item.videoId,
           thumbnailUrl: item.thumbnailUrl,
+          localPath: item.localPath,
+          isLocalVideo: item.isLocalVideo,
+          localTitle: item.localTitle,
           participantPosition: i + 1,
           totalParticipants: participants.length,
         ),
@@ -948,6 +1171,31 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
 
   Future<void> _processItem(int index) async {
     final item = _playlist[index];
+    if (item.localPath != null) {
+      _addTrack(
+        item,
+        videoId: 'local:${item.localPath}',
+        title: item.localTitle ?? File(item.localPath!).uri.pathSegments.last,
+        localPath: item.localPath,
+        isLocalVideo: item.isLocalVideo,
+      );
+      return;
+    }
+    final soundCloudUrl = extractSoundCloudTrackUrl(item.url);
+    if (soundCloudUrl != null) {
+      final pathSegments = Uri.parse(
+        soundCloudUrl,
+      ).pathSegments.where((segment) => segment.isNotEmpty);
+      final title = pathSegments.isNotEmpty
+          ? pathSegments.last.replaceAll('-', ' ')
+          : item.participant;
+      _addTrack(
+        item,
+        videoId: soundCloudUrl,
+        title: title.isEmpty ? item.participant : title,
+      );
+      return;
+    }
     try {
       final video = await _yt.videos.get(item.url);
       _addTrack(
@@ -971,6 +1219,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     required String title,
     String? thumbnailUrl,
     Duration? duration,
+    String? localPath,
+    bool isLocalVideo = false,
   }) {
     if (!mounted) return;
     setState(() {
@@ -981,6 +1231,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
           title: title,
           thumbnailUrl: thumbnailUrl,
           duration: duration,
+          localPath: localPath,
+          isLocalVideo: isLocalVideo,
           participantPosition: item.participantPosition,
           totalParticipants: item.totalParticipants,
         ),
@@ -999,15 +1251,186 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       _volumeBoost = 1.0;
     });
     TrackItem item = _tracks[_currentIndex];
-
+    await _stopSoundCloudPlayer();
+    await _stopAndDisposeLocalVideo();
+    await _audioHandler.prepareExternalPlayback();
     _audioHandler.updateMetadata(item);
     _audioHandler.updatePosition(Duration.zero);
-    _audioHandler.play();
-
     await _saveCheckpoint();
 
+    if (item.localPath != null) {
+      _localVideoError = null;
+      final localFile = File(item.localPath!);
+      if (!await localFile.exists()) {
+        if (!mounted) return;
+        setState(() => _isTransitioning = false);
+        await _showLocalMediaError(
+          'File non disponibile',
+          'Il file selezionato non è più disponibile sul dispositivo.',
+        );
+        return;
+      }
+
+      if (item.isLocalVideo) {
+        final controller = VideoPlayerController.file(localFile);
+        setState(() {
+          _localVideoController = controller;
+        });
+        controller.addListener(() {
+          if (!mounted || _localVideoController != controller) return;
+          final value = controller.value;
+          if (value.hasError) {
+            if (_localVideoError != value.errorDescription) {
+              setState(() {
+                _localVideoError =
+                    value.errorDescription ?? 'Errore di riproduzione video.';
+              });
+            }
+            return;
+          }
+          if (value.isInitialized && _isTransitioning) {
+            setState(() => _isTransitioning = false);
+          }
+          if (value.isInitialized) {
+            _audioHandler.updateExternalPlayback(
+              value.isPlaying,
+              value.position,
+            );
+          }
+          if (value.isCompleted &&
+              !_isTransitioning &&
+              _currentIndex >= 0 &&
+              _currentIndex < _tracks.length &&
+              _tracks[_currentIndex].localPath != null &&
+              _tracks[_currentIndex].isLocalVideo) {
+            _nextTrack();
+          }
+        });
+        try {
+          await controller.initialize().timeout(const Duration(seconds: 30));
+          if (!mounted || _localVideoController != controller) return;
+          await controller.setLooping(false);
+          _audioHandler.updateMetadata(
+            item,
+            duration: controller.value.duration,
+          );
+          await controller.play();
+        } catch (error) {
+          debugPrint('Impossibile riprodurre il video locale: $error');
+          _localVideoController = null;
+          await controller.dispose();
+          if (!mounted) return;
+          setState(() {
+            _isTransitioning = false;
+            _localVideoError = error is TimeoutException
+                ? 'Il video non ha terminato il caricamento.'
+                : 'Il formato video non è supportato o il file è danneggiato.';
+          });
+          await _showLocalMediaError(
+            'Impossibile riprodurre il video',
+            _localVideoError!,
+          );
+        }
+      } else {
+        try {
+          await _audioHandler.playLocalAudio(item.localPath!, item);
+          if (mounted) setState(() => _isTransitioning = false);
+        } catch (error) {
+          debugPrint('Impossibile riprodurre l’audio locale: $error');
+          if (!mounted) return;
+          setState(() => _isTransitioning = false);
+          await _showLocalMediaError(
+            'Impossibile riprodurre l’audio',
+            'Il formato del file audio potrebbe non essere supportato.',
+          );
+        }
+      }
+      return;
+    }
+
+    if (item.isSoundCloud) {
+      _audioHandler.play();
+      _soundCloudPlayerActive = true;
+      await _webViewController.loadHtmlString(
+        _soundCloudPlayerHtml(item.videoId),
+        baseUrl: 'https://radio-brong.local',
+      );
+      return;
+    }
+
+    _audioHandler.play();
     final url = 'https://www.yout-ube.com/watch?v=${item.videoId}';
     await _webViewController.loadRequest(Uri.parse(url));
+  }
+
+  String _soundCloudPlayerHtml(String trackUrl) {
+    final embedUrl = soundCloudEmbedUri(trackUrl).toString();
+    return '''
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; background: #000; }
+    iframe { display: block; width: 100%; height: 100%; border: 0; }
+  </style>
+</head>
+<body>
+  <iframe id="soundcloud-player" allow="autoplay"
+    src="$embedUrl"></iframe>
+  <script src="https://w.soundcloud.com/player/api.js"></script>
+  <script>
+    (function() {
+      function connectPlayer() {
+        if (!window.SC || !window.SC.Widget) {
+          window.setTimeout(connectPlayer, 100);
+          return;
+        }
+        var widget = SC.Widget(document.getElementById('soundcloud-player'));
+        window._radioSoundCloudWidget = widget;
+        window._radioSoundCloudPosition = 0;
+        widget.bind(SC.Widget.Events.READY, function() {
+          widget.getDuration(function(duration) {
+            FlutterRadio.postMessage('soundcloudDuration:' + duration);
+          });
+          widget.bind(SC.Widget.Events.PLAY, function() {
+            FlutterRadio.postMessage('videoPlaying');
+          });
+          widget.bind(SC.Widget.Events.PAUSE, function() {
+            FlutterRadio.postMessage('videoPaused');
+          });
+          widget.bind(SC.Widget.Events.FINISH, function() {
+            FlutterRadio.postMessage('soundcloudFinished');
+          });
+          widget.bind(SC.Widget.Events.PLAY_PROGRESS, function(event) {
+            window._radioSoundCloudPosition = event.currentPosition;
+          });
+          widget.play();
+        });
+      }
+      connectPlayer();
+    })();
+  </script>
+</body>
+</html>
+''';
+  }
+
+  Future<void> _showLocalMediaError(String title, String message) async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Ok'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _handleUnavailableVideo() {
@@ -1210,8 +1633,140 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     );
   }
 
-  void _internalStop() {
-    _webViewController.loadRequest(Uri.parse('about:blank'));
+  String _formatPlaybackTime(Duration duration) {
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return hours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
+  }
+
+  Future<void> _seekLocalVideo(Duration target) async {
+    final controller = _localVideoController;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    final wasPlaying = controller.value.isPlaying;
+    await controller.seekTo(target);
+    if (wasPlaying &&
+        mounted &&
+        identical(_localVideoController, controller) &&
+        !controller.value.isPlaying) {
+      await controller.play();
+    }
+  }
+
+  Widget _buildLocalMediaControls(TrackItem item) {
+    return StreamBuilder<PlaybackState>(
+      stream: _audioHandler.playbackState,
+      initialData: _audioHandler.playbackState.value,
+      builder: (context, snapshot) {
+        final playbackState =
+            snapshot.data ?? _audioHandler.playbackState.value;
+        final isPlaying = playbackState.playing;
+        final duration = item.isLocalVideo
+            ? _localVideoController?.value.duration ?? Duration.zero
+            : _audioHandler.mediaItem.value?.duration ?? Duration.zero;
+        final position = playbackState.updatePosition;
+        final maxMilliseconds = duration.inMilliseconds;
+        final sliderValue = maxMilliseconds > 0
+            ? position.inMilliseconds.clamp(0, maxMilliseconds).toDouble()
+            : 0.0;
+
+        return Container(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+          decoration: BoxDecoration(
+            color: _seasonalSurfaceColor,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: Colors.white.withOpacity(0.08)),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Slider(
+                value: sliderValue,
+                max: maxMilliseconds > 0 ? maxMilliseconds.toDouble() : 1,
+                activeColor: _seasonalButtonColor,
+                inactiveColor: Colors.white24,
+                onChanged: maxMilliseconds > 0
+                    ? (value) {
+                        final target = Duration(milliseconds: value.round());
+                        if (item.isLocalVideo) {
+                          unawaited(_seekLocalVideo(target));
+                        } else {
+                          _audioHandler.seek(target);
+                        }
+                      }
+                    : null,
+              ),
+              Row(
+                children: [
+                  Text(
+                    _formatPlaybackTime(position),
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    onPressed: () {
+                      if (isPlaying) {
+                        _audioHandler.pause();
+                      } else {
+                        _audioHandler.play();
+                      }
+                    },
+                    tooltip: isPlaying ? 'Pausa' : 'Riprendi',
+                    icon: Icon(
+                      isPlaying ? Icons.pause_circle : Icons.play_circle,
+                      color: Colors.white,
+                      size: 38,
+                    ),
+                  ),
+                  const Spacer(),
+                  Text(
+                    _formatPlaybackTime(duration),
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _stopSoundCloudPlayer() async {
+    if (!_soundCloudPlayerActive) return;
+    _soundCloudPlayerActive = false;
+    await _webViewController.runJavaScript(
+      'if (window._radioSoundCloudWidget) window._radioSoundCloudWidget.pause();',
+    );
+    await _loadBlankWebView();
+  }
+
+  Future<void> _loadBlankWebView() async {
+    final completer = Completer<void>();
+    _blankWebViewLoadCompleter = completer;
+    try {
+      await _webViewController.loadRequest(Uri.parse('about:blank'));
+      await completer.future.timeout(const Duration(seconds: 5));
+      await WidgetsBinding.instance.endOfFrame;
+    } catch (error, stackTrace) {
+      debugPrint('Impossibile arrestare la pagina multimediale: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    } finally {
+      if (identical(_blankWebViewLoadCompleter, completer)) {
+        _blankWebViewLoadCompleter = null;
+      }
+    }
+  }
+
+  Future<void> _internalStop() async {
+    final hadSoundCloudPlayer = _soundCloudPlayerActive;
+    await _stopSoundCloudPlayer();
+    if (!hadSoundCloudPlayer) {
+      await _webViewController.loadRequest(Uri.parse('about:blank'));
+    }
+    unawaited(_audioHandler.stopSilently());
+    unawaited(_stopAndDisposeLocalVideo());
     _saveCheckpoint();
     setState(() {
       _currentIndex = -1;
@@ -1241,7 +1796,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       ),
     );
     if (confirm == true) {
-      _internalStop();
+      await _internalStop();
       _audioHandler.stopSilently();
     }
   }
@@ -1255,11 +1810,20 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     _lastTrackChange = now;
 
     if (_currentIndex + 1 < _tracks.length) {
+      final previousItem = _tracks[_currentIndex];
       setState(() {
         _currentIndex++;
       });
+      final nextItem = _tracks[_currentIndex];
+      if (previousItem.localPath == null &&
+          nextItem.localPath != null &&
+          nextItem.isLocalVideo) {
+        await WidgetsBinding.instance.endOfFrame;
+      }
       await _playCurrent();
     } else if (!_isProcessing) {
+      await _stopSoundCloudPlayer();
+      await _stopAndDisposeLocalVideo();
       await _checkpointStorage.clearCheckpoint();
       if (mounted) {
         setState(() {
@@ -1268,9 +1832,21 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
           _hasCheckpoint = false;
         });
       }
+
       _audioHandler.stopSilently();
       _openParticipantSelector();
     }
+  }
+
+  Future<void> _stopAndDisposeLocalVideo() async {
+    final controller = _localVideoController;
+    _localVideoController = null;
+    if (controller == null) return;
+
+    if (controller.value.isInitialized && controller.value.isPlaying) {
+      await controller.pause();
+    }
+    await controller.dispose();
   }
 
   Future<void> _persistCurrentCheckpoint() async {
@@ -1312,7 +1888,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
           backgroundColor: Colors.transparent,
           elevation: 0,
           actions: [
-            if (_currentIndex != -1)
+            if (_currentIndex != -1 && _tracks[_currentIndex].localPath == null)
               IconButton(
                 onPressed: _openVolumeBoosterSheet,
                 icon: Icon(Icons.volume_up, color: Colors.white),
@@ -1340,7 +1916,107 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
-                        if (_currentIndex != -1)
+                        if (_currentIndex != -1 &&
+                            currentItem?.isLocalVideo == true)
+                          _localVideoController != null
+                              ? ValueListenableBuilder<VideoPlayerValue>(
+                                  valueListenable: _localVideoController!,
+                                  builder: (context, value, child) {
+                                    if (value.hasError) {
+                                      return Center(
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(24),
+                                          child: Text(
+                                            value.errorDescription ??
+                                                'Errore di riproduzione video.',
+                                            textAlign: TextAlign.center,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    }
+                                    if (!value.isInitialized) {
+                                      return const Center(
+                                        child: CircularProgressIndicator(),
+                                      );
+                                    }
+                                    return Center(
+                                      child: GestureDetector(
+                                        onTap: () {
+                                          if (value.isPlaying) {
+                                            _audioHandler.pause();
+                                          } else {
+                                            _audioHandler.play();
+                                          }
+                                        },
+                                        child: Stack(
+                                          alignment: Alignment.center,
+                                          children: [
+                                            AspectRatio(
+                                              aspectRatio: value.aspectRatio,
+                                              child: child,
+                                            ),
+                                            if (!value.isPlaying)
+                                              const Icon(
+                                                Icons.play_circle_fill,
+                                                size: 72,
+                                                color: Colors.white70,
+                                              ),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                  child: VideoPlayer(_localVideoController!),
+                                )
+                              : _localVideoError != null
+                              ? Center(
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(24),
+                                    child: Text(
+                                      _localVideoError!,
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                              : const Center(child: CircularProgressIndicator())
+                        else if (_currentIndex != -1 &&
+                            currentItem?.localPath != null)
+                          Center(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.audiotrack,
+                                  size: 96,
+                                  color: Colors.white70,
+                                ),
+                                const SizedBox(height: 16),
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 24,
+                                  ),
+                                  child: Text(
+                                    currentItem!.title,
+                                    textAlign: TextAlign.center,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          )
+                        else if (_currentIndex != -1)
                           WebViewWidget(controller: _webViewController)
                         else
                           Container(
@@ -1492,7 +2168,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                               ),
                             ),
                           ),
-                        if (_isOffline)
+                        if (_isOffline && currentItem?.localPath == null)
                           Positioned(
                             top: 16,
                             left: 16,
@@ -1519,6 +2195,10 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                   ),
                 ),
               ),
+              if (currentItem?.localPath != null) ...[
+                const SizedBox(height: 12),
+                _buildLocalMediaControls(currentItem!),
+              ],
               const SizedBox(height: 20),
               SafeArea(
                 top: false,
@@ -1555,6 +2235,9 @@ class PlaylistItem {
   final String url;
   final String? videoId;
   final String? thumbnailUrl;
+  final String? localPath;
+  final String? localTitle;
+  final bool isLocalVideo;
   final int? participantPosition;
   final int? totalParticipants;
   final bool isCancelled;
@@ -1565,6 +2248,9 @@ class PlaylistItem {
     required this.url,
     this.videoId,
     this.thumbnailUrl,
+    this.localPath,
+    this.localTitle,
+    this.isLocalVideo = false,
     this.participantPosition,
     this.totalParticipants,
     this.isCancelled = false,
@@ -1586,14 +2272,20 @@ class TrackItem {
   final String title;
   final String? thumbnailUrl;
   final Duration? duration;
+  final String? localPath;
+  final bool isLocalVideo;
   final int? participantPosition;
   final int? totalParticipants;
+  bool get isSoundCloud => extractSoundCloudTrackUrl(videoId) != null;
+
   TrackItem({
     required this.participant,
     required this.videoId,
     required this.title,
     this.thumbnailUrl,
     this.duration,
+    this.localPath,
+    this.isLocalVideo = false,
     this.participantPosition,
     this.totalParticipants,
   });
@@ -1830,7 +2522,9 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
     final requestId = ++_suggestionRequestId;
     final normalizedQuery = query.trim();
     setState(() => _suggestions = []);
-    if (normalizedQuery.length < 2) {
+    if (normalizedQuery.length < 2 ||
+        extractSoundCloudTrackUrl(normalizedQuery) != null ||
+        extractSpotifyTrackUrl(normalizedQuery) != null) {
       return;
     }
     _suggestionDebounce = Timer(const Duration(milliseconds: 300), () {
@@ -1886,6 +2580,82 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
     });
     const maxAttempts = 3;
     try {
+      final videoId = extractYoutubeVideoIdFromUrl(normalizedQuery);
+      final soundCloudUrl = extractSoundCloudTrackUrl(normalizedQuery);
+      if (soundCloudUrl != null) {
+        String resolvedSoundCloudUrl;
+        try {
+          resolvedSoundCloudUrl = await resolveSoundCloudTrackUrl(
+            soundCloudUrl,
+          );
+        } catch (error) {
+          debugPrint('Impossibile risolvere il link SoundCloud: $error');
+          if (mounted) {
+            await _showErrorDialog(
+              'Link SoundCloud non valido',
+              'Non è stato possibile aprire il link condiviso. Controlla la '
+                  'connessione e verifica che il link punti a una traccia.',
+            );
+          }
+          return;
+        }
+        if (mounted) {
+          Navigator.pop(
+            context,
+            PlaylistItem(
+              participant: widget.participantName,
+              url: resolvedSoundCloudUrl,
+            ),
+          );
+        }
+        return;
+      }
+
+      final spotifyUrl = extractSpotifyTrackUrl(normalizedQuery);
+      if (spotifyUrl != null) {
+        try {
+          final track = await loadSpotifyTrack(spotifyUrl);
+          final videos = await _yt.search.getVideos(track.searchQuery);
+          if (!mounted) return;
+          if (videos.isEmpty) {
+            await _showErrorDialog(
+              'Brano non trovato su YouTube',
+              'Non è stato trovato un video per "${track.title}" di '
+                  '${track.artist}.',
+            );
+            return;
+          }
+          await _selectVideo(videos.first);
+        } catch (error) {
+          debugPrint('Impossibile cercare il brano Spotify su YouTube: $error');
+          if (mounted) {
+            await _showErrorDialog(
+              'Link Spotify non valido',
+              'Non è stato possibile recuperare il brano e cercarlo su '
+                  'YouTube. Verifica il link e la connessione.',
+            );
+          }
+        }
+        return;
+      }
+
+      if (videoId != null) {
+        try {
+          final video = await _yt.videos.get(videoId);
+          if (!mounted) return;
+          await _selectVideo(video);
+        } catch (error) {
+          debugPrint('Impossibile recuperare il video dal link: $error');
+          if (mounted) {
+            await _showErrorDialog(
+              'Link non valido',
+              'Impossibile recuperare i dettagli del video.',
+            );
+          }
+        }
+        return;
+      }
+
       for (var attempt = 1; attempt <= maxAttempts; attempt++) {
         try {
           var searchList = await _yt.search.getVideos(normalizedQuery);
@@ -1913,17 +2683,7 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
     }
   }
 
-  Future<void> _openMoreResults() async {
-    final video = await Navigator.of(context).push<Video>(
-      MaterialPageRoute(
-        builder: (context) => YoutubeWebSearchPage(
-          query: _lastSearchQuery,
-          yt: _yt,
-          themeData: widget.themeData,
-        ),
-      ),
-    );
-    if (!mounted || video == null) return;
+  Future<void> _selectVideo(Video video) async {
     if (video.duration != null &&
         video.duration! > const Duration(minutes: 5)) {
       final confirm = await showDialog<bool>(
@@ -1947,6 +2707,7 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
       );
       if (confirm != true || !mounted) return;
     }
+
     Navigator.pop(
       context,
       PlaylistItem(
@@ -1958,29 +2719,93 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
     );
   }
 
-  Future<void> _pasteLink() async {
-    ClipboardData? clipboardData = await Clipboard.getData(
-      Clipboard.kTextPlain,
+  Future<void> _openMoreResults() async {
+    final video = await Navigator.of(context).push<Video>(
+      MaterialPageRoute(
+        builder: (context) => YoutubeWebSearchPage(
+          query: _lastSearchQuery,
+          yt: _yt,
+          themeData: widget.themeData,
+        ),
+      ),
     );
-    String? pastedText = clipboardData?.text?.trim();
-    if (pastedText != null && pastedText.isNotEmpty) {
-      try {
-        Video video = await _yt.videos.get(pastedText);
-        if (!mounted) return;
-        Navigator.pop(
-          context,
-          PlaylistItem(
-            participant: widget.participantName,
-            url: video.url,
-            videoId: video.id.value,
-            thumbnailUrl: video.thumbnails.mediumResUrl,
-          ),
+    if (!mounted || video == null) return;
+    await _selectVideo(video);
+  }
+
+  Future<void> _openLocalFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.media,
+        allowMultiple: false,
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      final selectedFile = result.files.single;
+      final sourcePath = selectedFile.path;
+      if (sourcePath == null) {
+        await _showErrorDialog(
+          'File non accessibile',
+          'Non è stato possibile leggere il file selezionato.',
         );
-      } catch (e) {
-        if (!mounted) return;
-        _showErrorDialog(
-          "Link non valido",
-          "Impossibile recuperare i dettagli del video.",
+        return;
+      }
+
+      const videoExtensions = {
+        'mp4',
+        'm4v',
+        'mov',
+        'avi',
+        'mkv',
+        'webm',
+        '3gp',
+      };
+      const audioExtensions = {
+        'mp3',
+        'm4a',
+        'aac',
+        'wav',
+        'ogg',
+        'opus',
+        'flac',
+        'wma',
+      };
+      final extension = selectedFile.extension?.toLowerCase() ?? '';
+      final isLocalVideo = videoExtensions.contains(extension);
+      if (!isLocalVideo && !audioExtensions.contains(extension)) {
+        await _showErrorDialog(
+          'Formato non supportato',
+          'Scegli un file audio o video in un formato supportato.',
+        );
+        return;
+      }
+
+      final mediaDirectory = Directory(
+        '${(await getApplicationDocumentsDirectory()).path}${Platform.pathSeparator}RadioBrongMedia',
+      );
+      await mediaDirectory.create(recursive: true);
+      final destination = File(
+        '${mediaDirectory.path}${Platform.pathSeparator}${DateTime.now().microsecondsSinceEpoch}.$extension',
+      );
+      await File(sourcePath).copy(destination.path);
+      if (!mounted) return;
+
+      Navigator.pop(
+        context,
+        PlaylistItem(
+          participant: widget.participantName,
+          url: '',
+          localPath: destination.path,
+          localTitle: selectedFile.name,
+          isLocalVideo: isLocalVideo,
+        ),
+      );
+    } catch (error) {
+      debugPrint('Impossibile aprire il file locale: $error');
+      if (mounted) {
+        await _showErrorDialog(
+          'Impossibile aprire il file',
+          'Si è verificato un errore durante il caricamento del file.',
         );
       }
     }
@@ -2037,12 +2862,12 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               Text(
-                'Cerca per ${widget.participantName}',
+                'Turno di ${widget.participantName}',
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: 4),
               Text(
-                'Scegli un video YouTube',
+                'Cerca una canzone',
                 style: TextStyle(
                   color: Colors.white.withOpacity(0.75),
                   fontSize: 13,
@@ -2079,7 +2904,7 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
                           controller: _controller,
                           style: const TextStyle(color: Colors.white),
                           decoration: InputDecoration(
-                            hintText: 'Cerca su YouTube',
+                            hintText: 'Cerca o incolla link',
                             hintStyle: TextStyle(
                               color: Colors.white.withOpacity(0.6),
                             ),
@@ -2142,10 +2967,10 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
                       ),
                     ),
                     TextButton.icon(
-                      onPressed: _pasteLink,
-                      icon: Icon(Icons.link, color: colorScheme.primary),
+                      onPressed: _openLocalFile,
+                      icon: Icon(Icons.folder_open, color: colorScheme.primary),
                       label: Text(
-                        'Incolla link',
+                        'Apri file locale',
                         style: TextStyle(color: colorScheme.primary),
                       ),
                       style: TextButton.styleFrom(
@@ -2222,52 +3047,7 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
                                     child: InkWell(
                                       borderRadius: BorderRadius.circular(18),
                                       onTap: () async {
-                                        if (video.duration != null &&
-                                            video.duration! >
-                                                const Duration(minutes: 5)) {
-                                          bool?
-                                          confirm = await showDialog<bool>(
-                                            context: context,
-                                            builder: (context) => AlertDialog(
-                                              title: const Text(
-                                                'Canzone lunga',
-                                              ),
-                                              content: const Text(
-                                                'La canzone è più lunga di 5 minuti. Vuoi aggiungerla comunque?',
-                                              ),
-                                              actions: [
-                                                TextButton(
-                                                  onPressed: () =>
-                                                      Navigator.pop(
-                                                        context,
-                                                        false,
-                                                      ),
-                                                  child: const Text('No'),
-                                                ),
-                                                TextButton(
-                                                  onPressed: () =>
-                                                      Navigator.pop(
-                                                        context,
-                                                        true,
-                                                      ),
-                                                  child: const Text('Sì'),
-                                                ),
-                                              ],
-                                            ),
-                                          );
-                                          if (confirm != true) return;
-                                        }
-                                        if (!mounted) return;
-                                        Navigator.pop(
-                                          context,
-                                          PlaylistItem(
-                                            participant: widget.participantName,
-                                            url: video.url,
-                                            videoId: video.id.value,
-                                            thumbnailUrl:
-                                                video.thumbnails.mediumResUrl,
-                                          ),
-                                        );
+                                        await _selectVideo(video);
                                       },
                                       child: Padding(
                                         padding: const EdgeInsets.symmetric(

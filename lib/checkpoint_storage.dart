@@ -98,6 +98,8 @@ class CheckpointTrack {
     this.durationSeconds,
     this.participantPosition,
     this.totalParticipants,
+    this.localPath,
+    this.isLocalVideo = false,
   });
 
   final String participant;
@@ -107,6 +109,8 @@ class CheckpointTrack {
   final int? durationSeconds;
   final int? participantPosition;
   final int? totalParticipants;
+  final String? localPath;
+  final bool isLocalVideo;
 
   factory CheckpointTrack.fromJson(Map<String, dynamic> json) {
     return CheckpointTrack(
@@ -121,6 +125,8 @@ class CheckpointTrack {
       totalParticipants: int.tryParse(
         json['totalParticipants']?.toString() ?? '',
       ),
+      localPath: json['localPath']?.toString(),
+      isLocalVideo: json['isLocalVideo'] == true,
     );
   }
 
@@ -133,6 +139,8 @@ class CheckpointTrack {
       'durationSeconds': durationSeconds,
       'participantPosition': participantPosition,
       'totalParticipants': totalParticipants,
+      'localPath': localPath,
+      'isLocalVideo': isLocalVideo,
     };
   }
 }

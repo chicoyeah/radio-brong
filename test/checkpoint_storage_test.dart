@@ -15,6 +15,7 @@ void main() {
         title: 'One',
         participantPosition: 1,
         totalParticipants: 5,
+        localPath: 'local_media/song.mp3',
       ),
       CheckpointTrack(participant: 'B', videoId: '2', title: 'Two'),
       CheckpointTrack(participant: 'C', videoId: '3', title: 'Three'),
@@ -37,6 +38,17 @@ void main() {
     final numberedLoaded = CheckpointTrack.fromJson(numberedTrack.toJson());
     expect(numberedLoaded.participantPosition, 2);
     expect(numberedLoaded.totalParticipants, 5);
+    final localTrack = CheckpointTrack.fromJson(
+      CheckpointTrack(
+        participant: 'Local',
+        videoId: 'local:one',
+        title: 'One',
+        localPath: 'local_media/one.mp4',
+        isLocalVideo: true,
+      ).toJson(),
+    );
+    expect(localTrack.localPath, 'local_media/one.mp4');
+    expect(localTrack.isLocalVideo, isTrue);
 
     await tempDir.delete(recursive: true);
   });
