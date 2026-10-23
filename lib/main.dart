@@ -483,6 +483,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
           },
           onPageFinished: (String url) {
             debugPrint('Page finished loading: $url');
+            _lockWebViewZoom();
             if (url == 'about:blank') {
               final completer = _blankWebViewLoadCompleter;
               if (completer != null && !completer.isCompleted) {
@@ -741,11 +742,55 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       );
 
     if (_webViewController.platform is AndroidWebViewController) {
-      unawaited(
-        (_webViewController.platform as AndroidWebViewController)
-            .setMediaPlaybackRequiresUserGesture(false),
-      );
+      final androidController =
+          _webViewController.platform as AndroidWebViewController;
+      unawaited(androidController.setMediaPlaybackRequiresUserGesture(false));
+      unawaited(androidController.enableZoom(false));
+      unawaited(androidController.setUseWideViewPort(true));
     }
+  }
+
+  void _lockWebViewZoom() {
+    unawaited(
+      _webViewController.runJavaScript("""
+        (function() {
+          function enforceInitialScale() {
+            var viewport = document.querySelector('meta[name="viewport"]');
+            if (!viewport) {
+              viewport = document.createElement('meta');
+              viewport.name = 'viewport';
+              (document.head || document.documentElement).appendChild(viewport);
+            }
+            var content = 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no';
+            if (viewport.content !== content) viewport.content = content;
+          }
+          enforceInitialScale();
+          if (!window._radioZoomLockObserver) {
+            window._radioZoomLockObserver = new MutationObserver(enforceInitialScale);
+            window._radioZoomLockObserver.observe(document.head || document.documentElement, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              attributeFilter: ['content', 'name']
+            });
+            window.addEventListener('resize', enforceInitialScale);
+            window.addEventListener('orientationchange', function() {
+              enforceInitialScale();
+              window.setTimeout(enforceInitialScale, 100);
+            });
+            document.addEventListener('gesturestart', function(event) {
+              event.preventDefault();
+            }, { passive: false });
+            document.addEventListener('gesturechange', function(event) {
+              event.preventDefault();
+            }, { passive: false });
+            document.addEventListener('touchmove', function(event) {
+              if (event.touches.length > 1) event.preventDefault();
+            }, { passive: false });
+          }
+        })();
+      """),
+    );
   }
 
   void _listenToMediaButtons() {
@@ -1043,7 +1088,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
   Future<void> _openParticipantSelector() async {
     if (_isProcessing) return;
     final themeData = _seasonalThemeData;
-    final List<String>? result = await Navigator.of(context).push<List<String>>(
+    final result = await Navigator.of(context).push<ParticipantSelectionResult>(
       MaterialPageRoute(
         builder: (context) => ParticipantSelectorPage(
           initialList: _lastParticipants,
@@ -1052,10 +1097,12 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
         fullscreenDialog: true,
       ),
     );
-    if (result != null && result.isNotEmpty) {
-      _lastParticipants = List.from(result);
-      List<String> shuffled = List.from(result)..shuffle();
-      await _collectSongs(shuffled);
+    if (result != null && result.participants.isNotEmpty) {
+      _lastParticipants = List.from(result.participants);
+      final participants = result.randomize
+          ? (List<String>.from(result.participants)..shuffle())
+          : result.participants;
+      await _collectSongs(participants);
     }
   }
 
@@ -1369,7 +1416,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
 <!doctype html>
 <html>
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no">
   <style>
     html, body { margin: 0; width: 100%; height: 100%; background: #000; }
     iframe { display: block; width: 100%; height: 100%; border: 0; }
@@ -1614,20 +1661,23 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
   Widget _buildControlButton(
     IconData icon,
     String tooltip,
-    VoidCallback onPressed,
-  ) {
+    VoidCallback onPressed, {
+    required bool compact,
+  }) {
     return Expanded(
       child: InkWell(
         onTap: onPressed,
         borderRadius: BorderRadius.circular(18),
         child: Container(
-          height: 72,
+          height: compact ? 52 : 72,
           decoration: BoxDecoration(
             color: Colors.white.withOpacity(0.05),
             borderRadius: BorderRadius.circular(18),
             border: Border.all(color: Colors.white.withOpacity(0.08)),
           ),
-          child: Center(child: Icon(icon, color: Colors.white, size: 28)),
+          child: Center(
+            child: Icon(icon, color: Colors.white, size: compact ? 24 : 28),
+          ),
         ),
       ),
     );
@@ -1864,6 +1914,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
 
   @override
   Widget build(BuildContext context) {
+    final screenSize = MediaQuery.sizeOf(context);
+    final compact = screenSize.height < 500;
     TrackItem? currentItem =
         (_currentIndex >= 0 && _currentIndex < _tracks.length)
         ? _tracks[_currentIndex]
@@ -1882,8 +1934,12 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       data: themeData,
       child: Scaffold(
         appBar: AppBar(
-          toolbarHeight: 88,
-          title: Image.asset(_selectedLogo, height: 84, fit: BoxFit.contain),
+          toolbarHeight: compact ? 56 : 88,
+          title: Image.asset(
+            _selectedLogo,
+            height: compact ? 52 : 84,
+            fit: BoxFit.contain,
+          ),
           centerTitle: true,
           backgroundColor: Colors.transparent,
           elevation: 0,
@@ -1894,335 +1950,359 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                 icon: Icon(Icons.volume_up, color: Colors.white),
                 tooltip: 'Booster',
               ),
-            IconButton(
-              onPressed: _isProcessing ? null : _openParticipantSelector,
-              icon: Icon(Icons.playlist_play, color: Colors.white),
-              tooltip: 'Seleziona partecipanti',
-            ),
           ],
         ),
-        body: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
-          child: Column(
-            children: [
-              Expanded(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(24),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: _seasonalSurfaceColor,
+        body: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1400),
+            child: Padding(
+              padding: EdgeInsets.symmetric(
+                horizontal: screenSize.width < 600 ? 8 : 16,
+                vertical: compact ? 4 : 8,
+              ),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: ClipRRect(
                       borderRadius: BorderRadius.circular(24),
-                    ),
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        if (_currentIndex != -1 &&
-                            currentItem?.isLocalVideo == true)
-                          _localVideoController != null
-                              ? ValueListenableBuilder<VideoPlayerValue>(
-                                  valueListenable: _localVideoController!,
-                                  builder: (context, value, child) {
-                                    if (value.hasError) {
-                                      return Center(
-                                        child: Padding(
-                                          padding: const EdgeInsets.all(24),
-                                          child: Text(
-                                            value.errorDescription ??
-                                                'Errore di riproduzione video.',
-                                            textAlign: TextAlign.center,
-                                            style: const TextStyle(
-                                              color: Colors.white,
-                                            ),
-                                          ),
-                                        ),
-                                      );
-                                    }
-                                    if (!value.isInitialized) {
-                                      return const Center(
-                                        child: CircularProgressIndicator(),
-                                      );
-                                    }
-                                    return Center(
-                                      child: GestureDetector(
-                                        onTap: () {
-                                          if (value.isPlaying) {
-                                            _audioHandler.pause();
-                                          } else {
-                                            _audioHandler.play();
-                                          }
-                                        },
-                                        child: Stack(
-                                          alignment: Alignment.center,
-                                          children: [
-                                            AspectRatio(
-                                              aspectRatio: value.aspectRatio,
-                                              child: child,
-                                            ),
-                                            if (!value.isPlaying)
-                                              const Icon(
-                                                Icons.play_circle_fill,
-                                                size: 72,
-                                                color: Colors.white70,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: _seasonalSurfaceColor,
+                          borderRadius: BorderRadius.circular(24),
+                        ),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            if (_currentIndex != -1 &&
+                                currentItem?.isLocalVideo == true)
+                              _localVideoController != null
+                                  ? ValueListenableBuilder<VideoPlayerValue>(
+                                      valueListenable: _localVideoController!,
+                                      builder: (context, value, child) {
+                                        if (value.hasError) {
+                                          return Center(
+                                            child: Padding(
+                                              padding: const EdgeInsets.all(24),
+                                              child: Text(
+                                                value.errorDescription ??
+                                                    'Errore di riproduzione video.',
+                                                textAlign: TextAlign.center,
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                ),
                                               ),
-                                          ],
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                  child: VideoPlayer(_localVideoController!),
-                                )
-                              : _localVideoError != null
-                              ? Center(
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(24),
-                                    child: Text(
-                                      _localVideoError!,
-                                      textAlign: TextAlign.center,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                      ),
-                                    ),
-                                  ),
-                                )
-                              : const Center(child: CircularProgressIndicator())
-                        else if (_currentIndex != -1 &&
-                            currentItem?.localPath != null)
-                          Center(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(
-                                  Icons.audiotrack,
-                                  size: 96,
-                                  color: Colors.white70,
-                                ),
-                                const SizedBox(height: 16),
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 24,
-                                  ),
-                                  child: Text(
-                                    currentItem!.title,
-                                    textAlign: TextAlign.center,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          )
-                        else if (_currentIndex != -1)
-                          WebViewWidget(controller: _webViewController)
-                        else
-                          Container(
-                            color: _seasonalSurfaceColor,
-                            child: Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    Icons.radio,
-                                    size: 96,
-                                    color: Colors.white.withOpacity(0.18),
-                                  ),
-                                  const SizedBox(height: 12),
-                                  Text(
-                                    "Nessun brano in riproduzione",
-                                    style: TextStyle(
-                                      color: Colors.white.withOpacity(0.7),
-                                      fontSize: 16,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    "Premi il pulsante qui sotto per iniziare",
-                                    style: TextStyle(
-                                      color: Colors.white.withOpacity(0.55),
-                                      fontSize: 13,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 20),
-                                  Column(
-                                    children: [
-                                      ElevatedButton.icon(
-                                        onPressed: _isProcessing
-                                            ? null
-                                            : _openParticipantSelector,
-                                        icon: Icon(
-                                          Icons.playlist_play,
-                                          color: Colors.white,
-                                        ),
-                                        label: const Text(
-                                          'Avvia playlist',
-                                          style: TextStyle(color: Colors.white),
-                                        ),
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: _seasonalButtonColor,
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius: BorderRadius.circular(
-                                              18,
+                                            ),
+                                          );
+                                        }
+                                        if (!value.isInitialized) {
+                                          return const Center(
+                                            child: CircularProgressIndicator(),
+                                          );
+                                        }
+                                        return Center(
+                                          child: GestureDetector(
+                                            onTap: () {
+                                              if (value.isPlaying) {
+                                                _audioHandler.pause();
+                                              } else {
+                                                _audioHandler.play();
+                                              }
+                                            },
+                                            child: Stack(
+                                              alignment: Alignment.center,
+                                              children: [
+                                                AspectRatio(
+                                                  aspectRatio:
+                                                      value.aspectRatio,
+                                                  child: child,
+                                                ),
+                                                if (!value.isPlaying)
+                                                  const Icon(
+                                                    Icons.play_circle_fill,
+                                                    size: 72,
+                                                    color: Colors.white70,
+                                                  ),
+                                              ],
                                             ),
                                           ),
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 24,
-                                            vertical: 14,
-                                          ),
-                                        ),
+                                        );
+                                      },
+                                      child: VideoPlayer(
+                                        _localVideoController!,
                                       ),
-                                      if (_hasCheckpoint) ...[
-                                        const SizedBox(height: 12),
-                                        OutlinedButton.icon(
-                                          onPressed: _resumeFromCheckpoint,
-                                          icon: const Icon(
-                                            Icons.restart_alt,
+                                    )
+                                  : _localVideoError != null
+                                  ? Center(
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(24),
+                                        child: Text(
+                                          _localVideoError!,
+                                          textAlign: TextAlign.center,
+                                          style: const TextStyle(
                                             color: Colors.white,
                                           ),
-                                          label: const Text(
-                                            'Riprendi dal checkpoint',
-                                            style: TextStyle(
+                                        ),
+                                      ),
+                                    )
+                                  : const Center(
+                                      child: CircularProgressIndicator(),
+                                    )
+                            else if (_currentIndex != -1 &&
+                                currentItem?.localPath != null)
+                              Center(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(
+                                      Icons.audiotrack,
+                                      size: 96,
+                                      color: Colors.white70,
+                                    ),
+                                    const SizedBox(height: 16),
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 24,
+                                      ),
+                                      child: Text(
+                                        currentItem!.title,
+                                        textAlign: TextAlign.center,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              )
+                            else if (_currentIndex != -1)
+                              WebViewWidget(controller: _webViewController)
+                            else
+                              Container(
+                                color: _seasonalSurfaceColor,
+                                child: Center(
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        Icons.radio,
+                                        size: compact ? 56 : 96,
+                                        color: Colors.white.withOpacity(0.18),
+                                      ),
+                                      SizedBox(height: compact ? 4 : 12),
+                                      Text(
+                                        "Nessun brano in riproduzione",
+                                        style: TextStyle(
+                                          color: Colors.white.withOpacity(0.7),
+                                          fontSize: compact ? 14 : 16,
+                                        ),
+                                      ),
+                                      SizedBox(height: compact ? 2 : 8),
+                                      Text(
+                                        "Premi il pulsante qui sotto per iniziare",
+                                        style: TextStyle(
+                                          color: Colors.white.withOpacity(0.55),
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                      SizedBox(height: compact ? 8 : 20),
+                                      Column(
+                                        children: [
+                                          ElevatedButton.icon(
+                                            onPressed: _isProcessing
+                                                ? null
+                                                : _openParticipantSelector,
+                                            icon: Icon(
+                                              Icons.playlist_play,
                                               color: Colors.white,
                                             ),
+                                            label: const Text(
+                                              'Avvia playlist',
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                              ),
+                                            ),
+                                            style: ElevatedButton.styleFrom(
+                                              backgroundColor:
+                                                  _seasonalButtonColor,
+                                              shape: RoundedRectangleBorder(
+                                                borderRadius:
+                                                    BorderRadius.circular(18),
+                                              ),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 24,
+                                                    vertical: 14,
+                                                  ),
+                                            ),
                                           ),
-                                          style: OutlinedButton.styleFrom(
-                                            side: BorderSide(
-                                              color: _seasonalButtonColor,
+                                          if (_hasCheckpoint) ...[
+                                            const SizedBox(height: 12),
+                                            OutlinedButton.icon(
+                                              onPressed: _resumeFromCheckpoint,
+                                              icon: const Icon(
+                                                Icons.restart_alt,
+                                                color: Colors.white,
+                                              ),
+                                              label: const Text(
+                                                'Riprendi dal checkpoint',
+                                                style: TextStyle(
+                                                  color: Colors.white,
+                                                ),
+                                              ),
+                                              style: OutlinedButton.styleFrom(
+                                                side: BorderSide(
+                                                  color: _seasonalButtonColor,
+                                                ),
+                                                shape: RoundedRectangleBorder(
+                                                  borderRadius:
+                                                      BorderRadius.circular(18),
+                                                ),
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 20,
+                                                      vertical: 12,
+                                                    ),
+                                              ),
                                             ),
-                                            shape: RoundedRectangleBorder(
-                                              borderRadius:
-                                                  BorderRadius.circular(18),
+                                          ],
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            if ((currentItem?.participant ?? '')
+                                .trim()
+                                .isNotEmpty)
+                              Positioned(
+                                top: 16,
+                                left: 16,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 10,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withOpacity(0.35),
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(
+                                      color: Colors.white.withOpacity(0.08),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.person,
+                                        color: Colors.white.withOpacity(0.9),
+                                        size: 16,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        currentItem!.participantLabel,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 13,
+                                        ),
+                                      ),
+                                      if (_volumeBoost > 1.0) ...[
+                                        const SizedBox(width: 10),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 4,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: _seasonalButtonColor
+                                                .withOpacity(0.2),
+                                            borderRadius: BorderRadius.circular(
+                                              12,
                                             ),
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 20,
-                                              vertical: 12,
+                                          ),
+                                          child: Text(
+                                            'x${_volumeBoost.toStringAsFixed(2)}',
+                                            style: TextStyle(
+                                              color: Colors.white.withOpacity(
+                                                0.95,
+                                              ),
+                                              fontSize: 12,
                                             ),
                                           ),
                                         ),
                                       ],
                                     ],
                                   ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        if ((currentItem?.participant ?? '').trim().isNotEmpty)
-                          Positioned(
-                            top: 16,
-                            left: 16,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 10,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(0.35),
-                                borderRadius: BorderRadius.circular(16),
-                                border: Border.all(
-                                  color: Colors.white.withOpacity(0.08),
                                 ),
                               ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.person,
-                                    color: Colors.white.withOpacity(0.9),
-                                    size: 16,
+                            if (_isOffline && currentItem?.localPath == null)
+                              Positioned(
+                                top: 16,
+                                left: 16,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
                                   ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    currentItem!.participantLabel,
-                                    style: const TextStyle(
+                                  decoration: BoxDecoration(
+                                    color: Colors.redAccent.withOpacity(0.88),
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                  child: const Text(
+                                    'Offline',
+                                    style: TextStyle(
                                       color: Colors.white,
-                                      fontWeight: FontWeight.w700,
-                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
                                     ),
                                   ),
-                                  if (_volumeBoost > 1.0) ...[
-                                    const SizedBox(width: 10),
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 8,
-                                        vertical: 4,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: _seasonalButtonColor.withOpacity(
-                                          0.2,
-                                        ),
-                                        borderRadius: BorderRadius.circular(12),
-                                      ),
-                                      child: Text(
-                                        'x${_volumeBoost.toStringAsFixed(2)}',
-                                        style: TextStyle(
-                                          color: Colors.white.withOpacity(0.95),
-                                          fontSize: 12,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ),
-                          ),
-                        if (_isOffline && currentItem?.localPath == null)
-                          Positioned(
-                            top: 16,
-                            left: 16,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 8,
-                              ),
-                              decoration: BoxDecoration(
-                                color: Colors.redAccent.withOpacity(0.88),
-                                borderRadius: BorderRadius.circular(14),
-                              ),
-                              child: const Text(
-                                'Offline',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
                                 ),
                               ),
-                            ),
-                          ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (currentItem?.localPath != null) ...[
+                    SizedBox(height: compact ? 4 : 12),
+                    _buildLocalMediaControls(currentItem!),
+                  ],
+                  SizedBox(height: compact ? 6 : 20),
+                  SafeArea(
+                    top: false,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        _buildControlButton(
+                          Icons.skip_previous,
+                          'Precedente',
+                          _prevTrack,
+                          compact: compact,
+                        ),
+                        SizedBox(width: compact ? 6 : 10),
+                        _buildControlButton(
+                          Icons.stop,
+                          'Stop',
+                          _stopAudio,
+                          compact: compact,
+                        ),
+                        SizedBox(width: compact ? 6 : 10),
+                        _buildControlButton(
+                          Icons.skip_next,
+                          'Successivo',
+                          _nextTrack,
+                          compact: compact,
+                        ),
                       ],
                     ),
                   ),
-                ),
+                  SizedBox(height: compact ? 4 : 12),
+                ],
               ),
-              if (currentItem?.localPath != null) ...[
-                const SizedBox(height: 12),
-                _buildLocalMediaControls(currentItem!),
-              ],
-              const SizedBox(height: 20),
-              SafeArea(
-                top: false,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    _buildControlButton(
-                      Icons.skip_previous,
-                      'Precedente',
-                      _prevTrack,
-                    ),
-                    const SizedBox(width: 10),
-                    _buildControlButton(Icons.stop, 'Stop', _stopAudio),
-                    const SizedBox(width: 10),
-                    _buildControlButton(
-                      Icons.skip_next,
-                      'Successivo',
-                      _nextTrack,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-            ],
+            ),
           ),
         ),
       ),
@@ -2298,6 +2378,16 @@ class TrackItem {
   }
 }
 
+class ParticipantSelectionResult {
+  final List<String> participants;
+  final bool randomize;
+
+  const ParticipantSelectionResult({
+    required this.participants,
+    required this.randomize,
+  });
+}
+
 class ParticipantSelectorPage extends StatefulWidget {
   final List<String> initialList;
   final ThemeData themeData;
@@ -2313,6 +2403,7 @@ class ParticipantSelectorPage extends StatefulWidget {
 
 class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
   late List<String> _participants;
+  bool _randomizeParticipants = true;
   final TextEditingController _controller = TextEditingController();
 
   @override
@@ -2327,9 +2418,18 @@ class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
     super.dispose();
   }
 
+  void _reorderParticipants(int oldIndex, int newIndex) {
+    if (newIndex > oldIndex) newIndex--;
+    setState(() {
+      final participant = _participants.removeAt(oldIndex);
+      _participants.insert(newIndex, participant);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = widget.themeData.colorScheme;
+    final compact = MediaQuery.sizeOf(context).height < 500;
     return Scaffold(
       backgroundColor: colorScheme.surface,
       appBar: AppBar(
@@ -2361,115 +2461,173 @@ class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
         ],
       ),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            children: [
-              Expanded(
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: _participants.isEmpty
-                          ? Center(
-                              child: Text(
-                                'Nessun partecipante aggiunto ancora.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: Colors.white.withOpacity(0.7),
-                                ),
-                              ),
-                            )
-                          : ListView.separated(
-                              itemCount: _participants.length,
-                              separatorBuilder: (context, index) =>
-                                  const SizedBox(height: 10),
-                              itemBuilder: (context, index) {
-                                return Material(
-                                  color: colorScheme.surface,
-                                  borderRadius: BorderRadius.circular(18),
-                                  child: ListTile(
-                                    title: Text(
-                                      _participants[index],
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                    trailing: IconButton(
-                                      icon: const Icon(
-                                        Icons.delete,
-                                        color: Colors.white70,
-                                      ),
-                                      onPressed: () => setState(
-                                        () => _participants.removeAt(index),
-                                      ),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 800),
+            child: Padding(
+              padding: EdgeInsets.all(compact ? 8 : 16),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: Column(
+                      children: [
+                        Expanded(
+                          child: _participants.isEmpty
+                              ? Center(
+                                  child: Text(
+                                    'Nessun partecipante aggiunto ancora.',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: Colors.white.withOpacity(0.7),
                                     ),
                                   ),
-                                );
-                              },
+                                )
+                              : ReorderableListView.builder(
+                                  buildDefaultDragHandles: false,
+                                  onReorder: _reorderParticipants,
+                                  itemCount: _participants.length,
+                                  itemBuilder: (context, index) {
+                                    return Padding(
+                                      key: ValueKey(_participants[index]),
+                                      padding: const EdgeInsets.only(
+                                        bottom: 10,
+                                      ),
+                                      child: Material(
+                                        color: colorScheme.surface,
+                                        borderRadius: BorderRadius.circular(18),
+                                        child: ListTile(
+                                          title: Text(
+                                            _participants[index],
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                          trailing: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              IconButton(
+                                                icon: const Icon(
+                                                  Icons.delete,
+                                                  color: Colors.white70,
+                                                ),
+                                                onPressed: () => setState(
+                                                  () => _participants.removeAt(
+                                                    index,
+                                                  ),
+                                                ),
+                                              ),
+                                              if (!_randomizeParticipants)
+                                                ReorderableDragStartListener(
+                                                  index: index,
+                                                  child: const Padding(
+                                                    padding: EdgeInsets.all(8),
+                                                    child: Icon(
+                                                      Icons.drag_handle,
+                                                      color: Colors.white70,
+                                                    ),
+                                                  ),
+                                                ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                        ),
+                        SizedBox(height: compact ? 6 : 16),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: colorScheme.surface,
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(
+                              color: Colors.white.withOpacity(0.08),
                             ),
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: TextField(
+                                  controller: _controller,
+                                  style: const TextStyle(color: Colors.white),
+                                  decoration: InputDecoration(
+                                    hintText: 'Nome partecipante',
+                                    hintStyle: TextStyle(
+                                      color: Colors.white.withOpacity(0.6),
+                                    ),
+                                    border: InputBorder.none,
+                                  ),
+                                  onSubmitted: (_) => _addParticipant(),
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: _randomizeParticipants
+                                    ? 'Randomizzazione attiva'
+                                    : 'Randomizzazione disattivata',
+                                onPressed: () => setState(
+                                  () => _randomizeParticipants =
+                                      !_randomizeParticipants,
+                                ),
+                                icon: Icon(
+                                  Icons.shuffle,
+                                  color: _randomizeParticipants
+                                      ? colorScheme.primary
+                                      : Colors.white70,
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: _addParticipant,
+                                icon: Icon(
+                                  Icons.add,
+                                  color: colorScheme.primary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 16),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      decoration: BoxDecoration(
-                        color: colorScheme.surface,
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(
-                          color: Colors.white.withOpacity(0.08),
+                  ),
+                  SizedBox(height: compact ? 6 : 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: _participants.isEmpty
+                          ? null
+                          : () => Navigator.pop(
+                              context,
+                              ParticipantSelectionResult(
+                                participants: List.from(_participants),
+                                randomize: _randomizeParticipants,
+                              ),
+                            ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: colorScheme.primary,
+                        foregroundColor: Colors.white,
+                        padding: EdgeInsets.symmetric(
+                          vertical: compact ? 10 : 16,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18),
                         ),
                       ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _controller,
-                              style: const TextStyle(color: Colors.white),
-                              decoration: InputDecoration(
-                                hintText: 'Nome partecipante',
-                                hintStyle: TextStyle(
-                                  color: Colors.white.withOpacity(0.6),
-                                ),
-                                border: InputBorder.none,
-                              ),
-                              onSubmitted: (_) => _addParticipant(),
-                            ),
-                          ),
-                          IconButton(
-                            onPressed: _addParticipant,
-                            icon: Icon(Icons.add, color: colorScheme.primary),
-                          ),
-                        ],
+                      child: const Text(
+                        'Inizia Radio',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _participants.isEmpty
-                      ? null
-                      : () => Navigator.pop(context, _participants),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: colorScheme.primary,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18),
-                    ),
                   ),
-                  child: const Text(
-                    'Inizia Radio',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),
@@ -2839,6 +2997,8 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = widget.themeData.colorScheme;
+    final screenSize = MediaQuery.sizeOf(context);
+    final compact = screenSize.height < 500;
     return PopScope<PlaylistItem>(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
@@ -2883,260 +3043,290 @@ class _YoutubeSearchPageState extends State<YoutubeSearchPage> {
           ],
         ),
         body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  decoration: BoxDecoration(
-                    color: colorScheme.surface,
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(color: Colors.white.withOpacity(0.08)),
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _controller,
-                          style: const TextStyle(color: Colors.white),
-                          decoration: InputDecoration(
-                            hintText: 'Cerca o incolla link',
-                            hintStyle: TextStyle(
-                              color: Colors.white.withOpacity(0.6),
-                            ),
-                            border: InputBorder.none,
-                          ),
-                          onChanged: _onQueryChanged,
-                          onSubmitted: _search,
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: () => _search(_controller.text),
-                        icon: Icon(Icons.search, color: colorScheme.primary),
-                      ),
-                    ],
-                  ),
-                ),
-                if (_suggestions.isNotEmpty)
-                  Container(
-                    margin: const EdgeInsets.only(top: 8),
-                    decoration: BoxDecoration(
-                      color: colorScheme.surface,
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Colors.white.withOpacity(0.08)),
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: _suggestions.map((suggestion) {
-                        return ListTile(
-                          dense: true,
-                          leading: Icon(
-                            Icons.search,
-                            color: Colors.white.withOpacity(0.65),
-                          ),
-                          title: Text(
-                            suggestion,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: Colors.white),
-                          ),
-                          onTap: () {
-                            _controller.text = suggestion;
-                            _controller.selection = TextSelection.collapsed(
-                              offset: suggestion.length,
-                            );
-                            _search(suggestion);
-                          },
-                        );
-                      }).toList(),
-                    ),
-                  ),
-                const SizedBox(height: 14),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1100),
+              child: Padding(
+                padding: EdgeInsets.all(compact ? 8 : 16),
+                child: Column(
                   children: [
-                    Text(
-                      'Risultati',
-                      style: TextStyle(
-                        color: Colors.white.withOpacity(0.85),
-                        fontWeight: FontWeight.w600,
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
                       ),
-                    ),
-                    TextButton.icon(
-                      onPressed: _openLocalFile,
-                      icon: Icon(Icons.folder_open, color: colorScheme.primary),
-                      label: Text(
-                        'Apri file locale',
-                        style: TextStyle(color: colorScheme.primary),
-                      ),
-                      style: TextButton.styleFrom(
-                        backgroundColor: Colors.white.withOpacity(0.05),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
+                      decoration: BoxDecoration(
+                        color: colorScheme.surface,
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(
+                          color: Colors.white.withOpacity(0.08),
                         ),
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Expanded(
-                  child: _isSearching
-                      ? const Center(child: CircularProgressIndicator())
-                      : _results.isEmpty
-                      ? Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text(
-                                _lastSearchQuery.isEmpty
-                                    ? 'Nessun risultato. Scrivi qualcosa sopra per cercare.'
-                                    : 'Nessun risultato per "$_lastSearchQuery". Vuoi cercarlo su YouTube?',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  color: Colors.white.withOpacity(0.7),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _controller,
+                              style: const TextStyle(color: Colors.white),
+                              decoration: InputDecoration(
+                                hintText: 'Cerca o incolla link',
+                                hintStyle: TextStyle(
+                                  color: Colors.white.withOpacity(0.6),
                                 ),
+                                border: InputBorder.none,
                               ),
-                              if (_lastSearchQuery.isNotEmpty) ...[
-                                const SizedBox(height: 12),
-                                OutlinedButton.icon(
-                                  onPressed: _openMoreResults,
-                                  icon: Icon(
-                                    Icons.open_in_browser,
-                                    color: colorScheme.primary,
+                              onChanged: _onQueryChanged,
+                              onSubmitted: _search,
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: () => _search(_controller.text),
+                            icon: Icon(
+                              Icons.search,
+                              color: colorScheme.primary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (_suggestions.isNotEmpty)
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxHeight: compact ? 112 : 260,
+                        ),
+                        child: SingleChildScrollView(
+                          child: Container(
+                            margin: const EdgeInsets.only(top: 8),
+                            decoration: BoxDecoration(
+                              color: colorScheme.surface,
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: Colors.white.withOpacity(0.08),
+                              ),
+                            ),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: _suggestions.map((suggestion) {
+                                return ListTile(
+                                  dense: true,
+                                  leading: Icon(
+                                    Icons.search,
+                                    color: Colors.white.withOpacity(0.65),
                                   ),
-                                  label: Text(
-                                    'Cerca su YouTube',
+                                  title: Text(
+                                    suggestion,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(color: Colors.white),
+                                  ),
+                                  onTap: () {
+                                    _controller.text = suggestion;
+                                    _controller.selection =
+                                        TextSelection.collapsed(
+                                          offset: suggestion.length,
+                                        );
+                                    _search(suggestion);
+                                  },
+                                );
+                              }).toList(),
+                            ),
+                          ),
+                        ),
+                      ),
+                    SizedBox(height: compact ? 4 : 14),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Risultati',
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(0.85),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: _openLocalFile,
+                          icon: Icon(
+                            Icons.folder_open,
+                            color: colorScheme.primary,
+                          ),
+                          label: Text(
+                            'Apri file locale',
+                            style: TextStyle(color: colorScheme.primary),
+                          ),
+                          style: TextButton.styleFrom(
+                            backgroundColor: Colors.white.withOpacity(0.05),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    SizedBox(height: compact ? 4 : 10),
+                    Expanded(
+                      child: _isSearching
+                          ? const Center(child: CircularProgressIndicator())
+                          : _results.isEmpty
+                          ? Center(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    _lastSearchQuery.isEmpty
+                                        ? 'Nessun risultato. Scrivi qualcosa sopra per cercare.'
+                                        : 'Nessun risultato per "$_lastSearchQuery". Vuoi cercarlo su YouTube?',
+                                    textAlign: TextAlign.center,
                                     style: TextStyle(
-                                      color: colorScheme.primary,
+                                      color: Colors.white.withOpacity(0.7),
                                     ),
                                   ),
-                                  style: OutlinedButton.styleFrom(
-                                    backgroundColor: Colors.white.withOpacity(
-                                      0.05,
-                                    ),
-                                    side: BorderSide(
-                                      color: colorScheme.primary.withOpacity(
-                                        0.5,
+                                  if (_lastSearchQuery.isNotEmpty) ...[
+                                    const SizedBox(height: 12),
+                                    OutlinedButton.icon(
+                                      onPressed: _openMoreResults,
+                                      icon: Icon(
+                                        Icons.open_in_browser,
+                                        color: colorScheme.primary,
+                                      ),
+                                      label: Text(
+                                        'Cerca su YouTube',
+                                        style: TextStyle(
+                                          color: colorScheme.primary,
+                                        ),
+                                      ),
+                                      style: OutlinedButton.styleFrom(
+                                        backgroundColor: Colors.white
+                                            .withOpacity(0.05),
+                                        side: BorderSide(
+                                          color: colorScheme.primary
+                                              .withOpacity(0.5),
+                                        ),
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(
+                                            16,
+                                          ),
+                                        ),
                                       ),
                                     ),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(16),
+                                  ],
+                                ],
+                              ),
+                            )
+                          : Column(
+                              children: [
+                                Expanded(
+                                  child: ListView.separated(
+                                    itemCount: _results.length,
+                                    separatorBuilder: (context, index) =>
+                                        const SizedBox(height: 10),
+                                    itemBuilder: (context, index) {
+                                      var video = _results[index];
+                                      return Material(
+                                        color: colorScheme.surface,
+                                        borderRadius: BorderRadius.circular(18),
+                                        child: InkWell(
+                                          borderRadius: BorderRadius.circular(
+                                            18,
+                                          ),
+                                          onTap: () async {
+                                            await _selectVideo(video);
+                                          },
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 12,
+                                              vertical: 14,
+                                            ),
+                                            child: Row(
+                                              children: [
+                                                ClipRRect(
+                                                  borderRadius:
+                                                      BorderRadius.circular(14),
+                                                  child: Image.network(
+                                                    video.thumbnails.lowResUrl,
+                                                    width: 82,
+                                                    height: 58,
+                                                    fit: BoxFit.cover,
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 12),
+                                                Expanded(
+                                                  child: Column(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
+                                                    children: [
+                                                      Text(
+                                                        video.title,
+                                                        maxLines: 2,
+                                                        overflow: TextOverflow
+                                                            .ellipsis,
+                                                        style: const TextStyle(
+                                                          color: Colors.white,
+                                                          fontWeight:
+                                                              FontWeight.w600,
+                                                        ),
+                                                      ),
+                                                      const SizedBox(height: 6),
+                                                      Text(
+                                                        video.duration
+                                                                ?.toString()
+                                                                .split('.')
+                                                                .first ??
+                                                            '??:??',
+                                                        style: TextStyle(
+                                                          color: Colors.white
+                                                              .withOpacity(0.7),
+                                                          fontSize: 13,
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: OutlinedButton.icon(
+                                    onPressed: _openMoreResults,
+                                    icon: Icon(
+                                      Icons.open_in_browser,
+                                      color: colorScheme.primary,
+                                    ),
+                                    label: Text(
+                                      'Mostra altri risultati',
+                                      style: TextStyle(
+                                        color: colorScheme.primary,
+                                      ),
+                                    ),
+                                    style: OutlinedButton.styleFrom(
+                                      backgroundColor: Colors.white.withOpacity(
+                                        0.05,
+                                      ),
+                                      side: BorderSide(
+                                        color: colorScheme.primary.withOpacity(
+                                          0.5,
+                                        ),
+                                      ),
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(16),
+                                      ),
                                     ),
                                   ),
                                 ),
                               ],
-                            ],
-                          ),
-                        )
-                      : Column(
-                          children: [
-                            Expanded(
-                              child: ListView.separated(
-                                itemCount: _results.length,
-                                separatorBuilder: (context, index) =>
-                                    const SizedBox(height: 10),
-                                itemBuilder: (context, index) {
-                                  var video = _results[index];
-                                  return Material(
-                                    color: colorScheme.surface,
-                                    borderRadius: BorderRadius.circular(18),
-                                    child: InkWell(
-                                      borderRadius: BorderRadius.circular(18),
-                                      onTap: () async {
-                                        await _selectVideo(video);
-                                      },
-                                      child: Padding(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 12,
-                                          vertical: 14,
-                                        ),
-                                        child: Row(
-                                          children: [
-                                            ClipRRect(
-                                              borderRadius:
-                                                  BorderRadius.circular(14),
-                                              child: Image.network(
-                                                video.thumbnails.lowResUrl,
-                                                width: 82,
-                                                height: 58,
-                                                fit: BoxFit.cover,
-                                              ),
-                                            ),
-                                            const SizedBox(width: 12),
-                                            Expanded(
-                                              child: Column(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.start,
-                                                children: [
-                                                  Text(
-                                                    video.title,
-                                                    maxLines: 2,
-                                                    overflow:
-                                                        TextOverflow.ellipsis,
-                                                    style: const TextStyle(
-                                                      color: Colors.white,
-                                                      fontWeight:
-                                                          FontWeight.w600,
-                                                    ),
-                                                  ),
-                                                  const SizedBox(height: 6),
-                                                  Text(
-                                                    video.duration
-                                                            ?.toString()
-                                                            .split('.')
-                                                            .first ??
-                                                        '??:??',
-                                                    style: TextStyle(
-                                                      color: Colors.white
-                                                          .withOpacity(0.7),
-                                                      fontSize: 13,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
                             ),
-                            const SizedBox(height: 8),
-                            SizedBox(
-                              width: double.infinity,
-                              child: OutlinedButton.icon(
-                                onPressed: _openMoreResults,
-                                icon: Icon(
-                                  Icons.open_in_browser,
-                                  color: colorScheme.primary,
-                                ),
-                                label: Text(
-                                  'Mostra altri risultati',
-                                  style: TextStyle(color: colorScheme.primary),
-                                ),
-                                style: OutlinedButton.styleFrom(
-                                  backgroundColor: Colors.white.withOpacity(
-                                    0.05,
-                                  ),
-                                  side: BorderSide(
-                                    color: colorScheme.primary.withOpacity(0.5),
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
         ),
