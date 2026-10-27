@@ -293,7 +293,14 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
   static const String _introPlaylistUrl =
       'https://www.youtube.com/playlist?list=PLBr8N5C2sDZI';
 
-  late final WebViewController _webViewController;
+  late WebViewController _webViewController;
+  late WebViewController _preloadWebViewController;
+  late final WebViewController _firstWebViewController;
+  late final WebViewController _secondWebViewController;
+  String? _preloadingVideoId;
+  String? _preloadedVideoId;
+  Completer<void>? _preloadCompleter;
+  bool _preloadedVideoFullyBuffered = false;
   bool _soundCloudPlayerActive = false;
   Completer<void>? _blankWebViewLoadCompleter;
   VideoPlayerController? _localVideoController;
@@ -325,6 +332,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     super.initState();
     _initLogo();
     _initWebView();
+    _initPreloadWebView();
     _listenToMediaButtons();
     _startVideoStatePolling();
     _setupConnectivityListener();
@@ -420,75 +428,39 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
             ),
           )
         : WebViewController();
-    _webViewController = webViewController
+    _webViewController = webViewController;
+    _firstWebViewController = webViewController;
+    _webViewController
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0x00000000))
       ..addJavaScriptChannel(
         'FlutterRadio',
         onMessageReceived: (JavaScriptMessage message) {
-          if (message.message == 'videoEnded') {
-            debugPrint("Video ended via JS channel");
-            _nextTrack();
-          } else if (message.message == 'soundcloudFinished') {
-            _nextTrack();
-          } else if (message.message == 'ageRestrictedLoginRequired') {
-            _pendingAgeRestrictionLoginCheck = false;
-            _showAgeRestrictionLoginNotice();
-          } else if (message.message == 'openAgeRestrictedVideoOnYouTube') {
-            _openAgeRestrictedVideoOnYouTube();
-          } else if (message.message == 'videoPlaying') {
-            if (!_isTransitioning &&
-                _currentIndex >= 0 &&
-                _currentIndex < _tracks.length) {
-              final item = _tracks[_currentIndex];
-              if (item.localPath == null) {
-                _audioHandler.play();
-              }
-            }
-          } else if (message.message == 'videoPaused') {
-            if (!_isTransitioning &&
-                _currentIndex >= 0 &&
-                _currentIndex < _tracks.length) {
-              final item = _tracks[_currentIndex];
-              if (item.localPath == null) {
-                _audioHandler.pause();
-              }
-            }
-          } else if (message.message.startsWith('soundcloudDuration:')) {
-            final durationMilliseconds = int.tryParse(
-              message.message.substring('soundcloudDuration:'.length),
-            );
-            if (durationMilliseconds != null &&
-                _currentIndex >= 0 &&
-                _currentIndex < _tracks.length &&
-                _tracks[_currentIndex].isSoundCloud) {
-              _audioHandler.updateMetadata(
-                _tracks[_currentIndex],
-                duration: Duration(milliseconds: durationMilliseconds),
-              );
-            }
-          } else if (message.message == 'unavailableDetected' ||
-              message.message == 'unavailableDetectedNoLink') {
-            debugPrint("Video unavailable detected: ${message.message}");
-            _handleUnavailableVideo();
-          }
+          if (_handlePreloadMessage(message.message)) return;
+          if (!identical(webViewController, _webViewController)) return;
+          _handleWebViewMessage(message);
         },
       )
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (_) {
-            if (_isShowingOfflineError) {
+            if (identical(webViewController, _webViewController) &&
+                _isShowingOfflineError) {
               setState(() => _isShowingOfflineError = false);
             }
           },
           onPageFinished: (String url) {
             debugPrint('Page finished loading: $url');
-            _lockWebViewZoom();
+            _lockWebViewZoom(webViewController);
             if (url == 'about:blank') {
               final completer = _blankWebViewLoadCompleter;
               if (completer != null && !completer.isCompleted) {
                 completer.complete();
               }
+            }
+            if (!identical(webViewController, _webViewController)) {
+              unawaited(_prepareHiddenWebView(webViewController));
+              return;
             }
             _checkPendingAgeRestrictionLogin(url);
             setState(() {
@@ -499,7 +471,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                 _tracks[_currentIndex].isSoundCloud) {
               return;
             }
-            _webViewController.runJavaScript("""
+            webViewController.runJavaScript("""
               (function() {
                 function checkAgeLoginPrompt() {
                   var text = document.body ? document.body.innerText : '';
@@ -731,6 +703,10 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                 }.contains(error.errorType)) {
               return;
             }
+            if (!identical(webViewController, _webViewController)) {
+              _markPreloadFailed(error.description);
+              return;
+            }
             debugPrint(
               'Caricamento pagina fallito per un errore di rete: ${error.description}',
             );
@@ -741,18 +717,18 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
         ),
       );
 
-    if (_webViewController.platform is AndroidWebViewController) {
+    if (webViewController.platform is AndroidWebViewController) {
       final androidController =
-          _webViewController.platform as AndroidWebViewController;
+          webViewController.platform as AndroidWebViewController;
       unawaited(androidController.setMediaPlaybackRequiresUserGesture(false));
       unawaited(androidController.enableZoom(false));
       unawaited(androidController.setUseWideViewPort(true));
     }
   }
 
-  void _lockWebViewZoom() {
+  void _lockWebViewZoom(WebViewController controller) {
     unawaited(
-      _webViewController.runJavaScript("""
+      controller.runJavaScript("""
         (function() {
           function enforceInitialScale() {
             var viewport = document.querySelector('meta[name="viewport"]');
@@ -760,6 +736,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
               viewport = document.createElement('meta');
               viewport.name = 'viewport';
               (document.head || document.documentElement).appendChild(viewport);
+            }
+
             }
             var content = 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no';
             if (viewport.content !== content) viewport.content = content;
@@ -791,6 +769,509 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
         })();
       """),
     );
+  }
+
+  void _initPreloadWebView() {
+    final isWebKitPlatform =
+        defaultTargetPlatform == TargetPlatform.iOS ||
+        defaultTargetPlatform == TargetPlatform.macOS;
+    final controller = isWebKitPlatform
+        ? WebViewController.fromPlatformCreationParams(
+            WebKitWebViewControllerCreationParams(
+              mediaTypesRequiringUserAction: const <PlaybackMediaTypes>{},
+              allowsInlineMediaPlayback: true,
+            ),
+          )
+        : WebViewController();
+    _preloadWebViewController = controller;
+    _secondWebViewController = controller;
+    _preloadWebViewController
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(const Color(0x00000000))
+      ..addJavaScriptChannel(
+        'FlutterRadio',
+        onMessageReceived: (JavaScriptMessage message) {
+          if (_handlePreloadMessage(message.message)) return;
+          if (identical(controller, _webViewController)) {
+            _handleWebViewMessage(message);
+          }
+        },
+      )
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onPageFinished: (url) {
+            _lockWebViewZoom(controller);
+            if (url == 'about:blank') return;
+            if (!identical(controller, _webViewController)) {
+              unawaited(_prepareHiddenWebView(controller));
+            } else {
+              _checkPendingAgeRestrictionLogin(url);
+              if (mounted) setState(() => _isTransitioning = false);
+              unawaited(_activatePreloadedWebView(controller));
+            }
+          },
+          onWebResourceError: (error) {
+            if (error.isForMainFrame != true) return;
+            if (!identical(controller, _webViewController)) {
+              unawaited(
+                _preserveBufferedPreload(controller, error.description),
+              );
+            } else {
+              debugPrint(
+                'Errore nella WebView video attiva: ${error.description}',
+              );
+            }
+          },
+        ),
+      );
+
+    if (controller.platform is AndroidWebViewController) {
+      final androidController = controller.platform as AndroidWebViewController;
+      unawaited(androidController.setMediaPlaybackRequiresUserGesture(false));
+      unawaited(androidController.enableZoom(false));
+      unawaited(androidController.setUseWideViewPort(true));
+    }
+  }
+
+  Future<void> _prepareHiddenWebView(WebViewController controller) async {
+    final videoId = _preloadingVideoId;
+    if (videoId == null || identical(controller, _webViewController)) return;
+
+    try {
+      await controller.runJavaScript('''
+        (function() {
+          window._radioPreloading = true;
+          var startedAt = Date.now();
+          var readyReported = false;
+          var fullyBuffered = false;
+          var pausedAtStart = false;
+          var video;
+          var muteTimer;
+          function reportFailure(reason) {
+            if (readyReported) return;
+            if (video && reportBuffered(true)) return;
+            cleanupVideo();
+            FlutterRadio.postMessage('preloadFailed:$videoId:' + reason);
+          }
+          function cleanupVideo() {
+            stopEnforcingMute();
+            if (!video) return;
+            video.pause();
+          }
+          function stopEnforcingMute() {
+            if (muteTimer) {
+              window.clearInterval(muteTimer);
+              muteTimer = null;
+            }
+            if (video) video.removeEventListener('volumechange', mutePlayer);
+          }
+          window._radioStopPreloadMute = stopEnforcingMute;
+          function mutePlayer() {
+            var player = document.querySelector('#movie_player');
+            if (player && typeof player.mute === 'function') player.mute();
+            if (player && typeof player.setVolume === 'function') player.setVolume(0);
+            video.defaultMuted = true;
+            video.muted = true;
+            video.volume = 0;
+          }
+          function reportBuffered(allowShortBuffer) {
+            if (fullyBuffered || !video) return fullyBuffered;
+            mutePlayer();
+            var bufferedStart = Infinity;
+            var bufferedEnd = 0;
+            for (var i = 0; i < video.buffered.length; i++) {
+              if (video.buffered.start(i) <= 0.25) {
+                bufferedStart = video.buffered.start(i);
+                bufferedEnd = video.buffered.end(i);
+                break;
+              }
+            }
+            var hasStartupBuffer = video.readyState >= 2 &&
+                bufferedStart <= 0.25 &&
+                Number.isFinite(video.duration) &&
+                video.duration > 0 &&
+                bufferedEnd >= Math.min(8, video.duration);
+            var hasMinimumPlayableBuffer = video.readyState >= 2 &&
+                bufferedStart <= 0.25 &&
+                bufferedEnd >= Math.min(1, video.duration);
+            var isFullyBuffered = Number.isFinite(video.duration) &&
+                video.duration > 0 &&
+                bufferedStart <= 0.25 &&
+                bufferedEnd >= video.duration - 0.5;
+            if (isFullyBuffered) {
+              fullyBuffered = true;
+              if (!readyReported) {
+                readyReported = true;
+              }
+              pauseAtBeginning();
+              FlutterRadio.postMessage('preloadReady:$videoId:complete');
+              return readyReported;
+            }
+            if (!readyReported &&
+                (hasStartupBuffer ||
+                    (allowShortBuffer && hasMinimumPlayableBuffer))) {
+              readyReported = true;
+              if (!hasStartupBuffer) pauseAtBeginning();
+              FlutterRadio.postMessage('preloadReady:$videoId:partial');
+            }
+            if (readyReported && !pausedAtStart && hasStartupBuffer) {
+              pauseAtBeginning();
+            }
+            return readyReported;
+          }
+          function pauseAtBeginning() {
+            if (pausedAtStart) return;
+            pausedAtStart = true;
+            video.pause();
+            try {
+              video.currentTime = 0;
+            } catch (error) {
+              console.log('Could not rewind preloaded video:', error);
+            }
+          }
+          function prepareVideo() {
+            video = document.querySelector('video');
+            if (!video) {
+              if (Date.now() - startedAt >= 30000) {
+                reportFailure('video element unavailable');
+                return;
+              }
+              window.setTimeout(prepareVideo, 500);
+              return;
+            }
+            video.loop = true;
+            mutePlayer();
+            video.addEventListener('volumechange', mutePlayer);
+            muteTimer = window.setInterval(mutePlayer, 100);
+            window._radioPreloadMuteTimer = muteTimer;
+            if (!video._radioPreloadEventsInstalled) {
+              video._radioPreloadEventsInstalled = true;
+              video.addEventListener('ended', function() {
+                if (window._radioPreloading) {
+                  reportFailure('video ended during pre-buffer');
+                } else {
+                  FlutterRadio.postMessage('videoEnded');
+                }
+              });
+              video.addEventListener('play', function() {
+                FlutterRadio.postMessage('videoPlaying');
+              });
+              video.addEventListener('pause', function() {
+                FlutterRadio.postMessage('videoPaused');
+              });
+            }
+            video.play().then(function() {
+              mutePlayer();
+              var poll = function() {
+                if (!fullyBuffered) {
+                  reportBuffered();
+                  window.setTimeout(poll, 500);
+                }
+              };
+              video.addEventListener('stalled', function() {
+                reportBuffered(true) || reportFailure('stream stalled');
+              });
+              video.addEventListener('error', function() {
+                reportBuffered(true) || reportFailure('video error');
+              });
+              poll();
+            }).catch(function(error) {
+              reportFailure('autoplay blocked');
+              console.log('Video pre-buffer play failed:', error);
+            });
+          }
+          prepareVideo();
+        })();
+      ''');
+      if (_preloadingVideoId == videoId &&
+          !identical(controller, _webViewController)) {
+        debugPrint('Pre-buffer avviato per il video successivo: $videoId');
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Impossibile pre-caricare il video successivo: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  bool _handlePreloadMessage(String message) {
+    if (message.startsWith('preloadReady:')) {
+      final parts = message.split(':');
+      if (parts.length < 3) return true;
+      final videoId = parts[1];
+      if (videoId == _preloadingVideoId) {
+        _preloadedVideoId = videoId;
+        _preloadedVideoFullyBuffered = parts[2] == 'complete';
+        debugPrint(
+          _preloadedVideoFullyBuffered
+              ? 'Video successivo interamente bufferizzato: $videoId'
+              : 'WebView successiva pronta con buffer iniziale: $videoId',
+        );
+        final completer = _preloadCompleter;
+        if (completer != null && !completer.isCompleted) {
+          completer.complete();
+        }
+      }
+      return true;
+    }
+    if (message.startsWith('preloadFailed:')) {
+      final parts = message.split(':');
+      if (parts.length >= 3 && parts[1] == _preloadingVideoId) {
+        _markPreloadFailed(parts.sublist(2).join(':'));
+      }
+      return true;
+    }
+    return false;
+  }
+
+  void _markPreloadFailed(String reason) {
+    final videoId = _preloadingVideoId;
+    if (videoId == null) return;
+    debugPrint('Pre-buffer non riuscito per $videoId: $reason');
+    final completer = _preloadCompleter;
+    if (completer != null && !completer.isCompleted) {
+      completer.complete();
+    }
+    unawaited(_pauseFailedPreloadVideo());
+  }
+
+  Future<void> _pauseFailedPreloadVideo() async {
+    try {
+      await _preloadWebViewController.runJavaScript(
+        "document.querySelector('video')?.pause();",
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Impossibile fermare il video pre-caricato: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  Future<void> _preserveBufferedPreload(
+    WebViewController controller,
+    String reason,
+  ) async {
+    final videoId = _preloadingVideoId;
+    if (videoId == null) return;
+    try {
+      final result = await controller.runJavaScriptReturningResult('''
+        (function() {
+          var video = document.querySelector('video');
+          if (!video || video.readyState < 2) return '';
+          var duration = video.duration;
+          if (!Number.isFinite(duration) || duration <= 0) return '';
+          var start = Number.POSITIVE_INFINITY;
+          var end = 0;
+          for (var i = 0; i < video.buffered.length; i++) {
+            if (video.buffered.start(i) <= 0.25) {
+              start = video.buffered.start(i);
+              end = video.buffered.end(i);
+              break;
+            }
+          }
+          if (!Number.isFinite(start) ||
+              video.readyState < 2 ||
+              end < Math.min(1, duration)) return '';
+          return [start, end, video.currentTime, duration].join('|');
+        })()
+      ''');
+      final range = result.toString().replaceAll('"', '').split('|');
+      if (range.length == 4 &&
+          double.tryParse(range[0]) != null &&
+          double.tryParse(range[1]) != null &&
+          double.tryParse(range[2]) != null &&
+          double.tryParse(range[3]) != null) {
+        if (videoId != _preloadingVideoId) return;
+        final bufferedStart = double.tryParse(range[0]) ?? double.infinity;
+        final bufferedEnd = double.parse(range[1]);
+        final duration = double.parse(range[3]);
+        if (bufferedStart > 0.25 ||
+            bufferedEnd < (duration < 1 ? duration : 1)) {
+          _markPreloadFailed(reason);
+          return;
+        }
+        _preloadedVideoId = videoId;
+        _preloadedVideoFullyBuffered = bufferedEnd >= duration - 0.5;
+        debugPrint(
+          'Rete interrotta; conservo il buffer di $videoId '
+          'da ${range[2]} a $bufferedEnd secondi.',
+        );
+        final completer = _preloadCompleter;
+        if (completer != null && !completer.isCompleted) {
+          completer.complete();
+        }
+        return;
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Impossibile verificare il buffer video: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+    _markPreloadFailed(reason);
+  }
+
+  Future<void> _activatePreloadedWebView(
+    WebViewController controller, {
+    bool fullyBuffered = false,
+  }) async {
+    if (!identical(controller, _webViewController)) return;
+    try {
+      await controller.runJavaScript('''
+        (function() {
+          window._radioPreloading = false;
+          if (window._radioStopPreloadMute) {
+            window._radioStopPreloadMute();
+            window._radioStopPreloadMute = null;
+          }
+          function activateVideo() {
+            var video = document.querySelector('video');
+            if (!video) {
+              window.setTimeout(activateVideo, 500);
+              return;
+            }
+            video.loop = false;
+            var player = document.querySelector('#movie_player');
+            if (player && typeof player.unMute === 'function') player.unMute();
+            if (player && typeof player.setVolume === 'function') player.setVolume(100);
+            video.muted = false;
+            video.volume = 1;
+            var beginningIsBuffered = false;
+            for (var i = 0; i < video.buffered.length; i++) {
+              if (video.buffered.start(i) <= 0.25 &&
+                  video.buffered.end(i) >= 1) {
+                beginningIsBuffered = true;
+                break;
+              }
+            }
+            if ($fullyBuffered || beginningIsBuffered) video.currentTime = 0;
+            video._endedSent = false;
+            if (!video._radioPreloadEventsInstalled) {
+              video._radioPreloadEventsInstalled = true;
+              video.addEventListener('ended', function() {
+                FlutterRadio.postMessage('videoEnded');
+              });
+              video.addEventListener('play', function() {
+                FlutterRadio.postMessage('videoPlaying');
+              });
+              video.addEventListener('pause', function() {
+                FlutterRadio.postMessage('videoPaused');
+              });
+            }
+            if (!video._radioBoosterSetup) {
+              video._radioBoosterSetup = true;
+              try {
+                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                const audioCtx = new AudioContextClass();
+                const source = audioCtx.createMediaElementSource(video);
+                const gainNode = audioCtx.createGain();
+                source.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                gainNode.gain.value = ${_volumeBoost.toString()};
+                window._radioVolumeBooster = gainNode;
+                audioCtx.resume().catch(function() {});
+              } catch (error) {
+                console.log('Audio booster not available:', error);
+              }
+            }
+            video.play().catch(function(error) {
+              console.log('Pre-buffered video play failed:', error);
+            });
+          }
+          activateVideo();
+        })();
+      ''');
+    } catch (error, stackTrace) {
+      debugPrint('Impossibile attivare il video pre-caricato: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  Future<void> _preloadNextTrack() async {
+    if (_currentIndex < 0 ||
+        _currentIndex + 1 >= _tracks.length ||
+        _tracks[_currentIndex].isSoundCloud ||
+        _tracks[_currentIndex].localPath != null) {
+      return;
+    }
+    final nextTrack = _tracks[_currentIndex + 1];
+    if (nextTrack.isSoundCloud || nextTrack.localPath != null) return;
+    if (_preloadedVideoId == nextTrack.videoId ||
+        _preloadingVideoId == nextTrack.videoId) {
+      return;
+    }
+
+    _preloadedVideoId = null;
+    _preloadedVideoFullyBuffered = false;
+    _preloadingVideoId = nextTrack.videoId;
+    _preloadCompleter = Completer<void>();
+    final url = 'https://www.yout-ube.com/watch?v=${nextTrack.videoId}';
+    try {
+      await _preloadWebViewController.loadRequest(Uri.parse(url));
+    } catch (error, stackTrace) {
+      debugPrint('Impossibile avviare il pre-caricamento video: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      _markPreloadFailed(error.toString());
+    }
+  }
+
+  Future<void> _clearPreload() async {
+    if (_preloadingVideoId == null && _preloadedVideoId == null) return;
+    final completer = _preloadCompleter;
+    if (completer != null && !completer.isCompleted) {
+      completer.complete();
+    }
+    _preloadingVideoId = null;
+    _preloadedVideoId = null;
+    _preloadedVideoFullyBuffered = false;
+    try {
+      await _preloadWebViewController.runJavaScript(
+        "document.querySelector('video')?.pause();",
+      );
+      await _preloadWebViewController.loadRequest(Uri.parse('about:blank'));
+    } catch (error, stackTrace) {
+      debugPrint('Impossibile interrompere il pre-buffer: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  void _handleWebViewMessage(JavaScriptMessage message) {
+    if (message.message == 'videoEnded' ||
+        message.message == 'soundcloudFinished') {
+      _nextTrack();
+    } else if (message.message == 'ageRestrictedLoginRequired') {
+      _pendingAgeRestrictionLoginCheck = false;
+      _showAgeRestrictionLoginNotice();
+    } else if (message.message == 'openAgeRestrictedVideoOnYouTube') {
+      _openAgeRestrictedVideoOnYouTube();
+    } else if (message.message == 'videoPlaying') {
+      if (!_isTransitioning &&
+          _currentIndex >= 0 &&
+          _currentIndex < _tracks.length &&
+          _tracks[_currentIndex].localPath == null) {
+        _audioHandler.play();
+      }
+    } else if (message.message == 'videoPaused') {
+      if (!_isTransitioning &&
+          _currentIndex >= 0 &&
+          _currentIndex < _tracks.length &&
+          _tracks[_currentIndex].localPath == null) {
+        _audioHandler.pause();
+      }
+    } else if (message.message.startsWith('soundcloudDuration:')) {
+      final durationMilliseconds = int.tryParse(
+        message.message.substring('soundcloudDuration:'.length),
+      );
+      if (durationMilliseconds != null &&
+          _currentIndex >= 0 &&
+          _currentIndex < _tracks.length &&
+          _tracks[_currentIndex].isSoundCloud) {
+        _audioHandler.updateMetadata(
+          _tracks[_currentIndex],
+          duration: Duration(milliseconds: durationMilliseconds),
+        );
+      }
+    } else if (message.message == 'unavailableDetected' ||
+        message.message == 'unavailableDetectedNoLink') {
+      debugPrint("Video unavailable detected: ${message.message}");
+      _handleUnavailableVideo();
+    }
   }
 
   void _listenToMediaButtons() {
@@ -891,6 +1372,10 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
 
   @override
   void dispose() {
+    final preloadCompleter = _preloadCompleter;
+    if (preloadCompleter != null && !preloadCompleter.isCompleted) {
+      preloadCompleter.complete();
+    }
     _yt.close();
     _videoStateTimer?.cancel();
     _connectivitySubscription?.cancel();
@@ -1217,16 +1702,24 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
   }
 
   Future<void> _processItem(int index) async {
-    final item = _playlist[index];
+    final track = await _createTrack(_playlist[index]);
+    if (track == null || !mounted) return;
+    setState(() {
+      _tracks.add(track);
+    });
+  }
+
+  Future<TrackItem?> _createTrack(PlaylistItem item) async {
     if (item.localPath != null) {
-      _addTrack(
-        item,
+      return TrackItem(
+        participant: item.participant,
         videoId: 'local:${item.localPath}',
         title: item.localTitle ?? File(item.localPath!).uri.pathSegments.last,
+        participantPosition: item.participantPosition,
+        totalParticipants: item.totalParticipants,
         localPath: item.localPath,
         isLocalVideo: item.isLocalVideo,
       );
-      return;
     }
     final soundCloudUrl = extractSoundCloudTrackUrl(item.url);
     if (soundCloudUrl != null) {
@@ -1236,55 +1729,116 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       final title = pathSegments.isNotEmpty
           ? pathSegments.last.replaceAll('-', ' ')
           : item.participant;
-      _addTrack(
-        item,
+      return TrackItem(
+        participant: item.participant,
         videoId: soundCloudUrl,
         title: title.isEmpty ? item.participant : title,
+        participantPosition: item.participantPosition,
+        totalParticipants: item.totalParticipants,
       );
-      return;
     }
     try {
       final video = await _yt.videos.get(item.url);
-      _addTrack(
-        item,
+      return TrackItem(
+        participant: item.participant,
         videoId: video.id.value,
         title: video.title,
         thumbnailUrl: video.thumbnails.mediumResUrl,
         duration: video.duration,
+        participantPosition: item.participantPosition,
+        totalParticipants: item.totalParticipants,
       );
     } catch (e) {
       debugPrint("Metadata error: $e");
       if (item.videoId != null) {
-        _addTrack(item, videoId: item.videoId!, title: item.participant);
-      }
-    }
-  }
-
-  void _addTrack(
-    PlaylistItem item, {
-    required String videoId,
-    required String title,
-    String? thumbnailUrl,
-    Duration? duration,
-    String? localPath,
-    bool isLocalVideo = false,
-  }) {
-    if (!mounted) return;
-    setState(() {
-      _tracks.add(
-        TrackItem(
+        return TrackItem(
           participant: item.participant,
-          videoId: videoId,
-          title: title,
-          thumbnailUrl: thumbnailUrl,
-          duration: duration,
-          localPath: localPath,
-          isLocalVideo: isLocalVideo,
+          videoId: item.videoId!,
+          title: item.participant,
           participantPosition: item.participantPosition,
           totalParticipants: item.totalParticipants,
+        );
+      }
+    }
+    return null;
+  }
+
+  Future<void> _changeCurrentVideo() async {
+    if (_currentIndex < 0 || _currentIndex >= _tracks.length) return;
+    final currentIndex = _currentIndex;
+    final currentTrack = _tracks[currentIndex];
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cambiare video?'),
+        content: Text(
+          'Vuoi scegliere un altro video per ${currentTrack.participant}?',
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Annulla'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Cambia video'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+
+    await _audioHandler.pause();
+    if (!mounted) return;
+
+    final selection = await Navigator.of(context).push<PlaylistItem>(
+      MaterialPageRoute(
+        builder: (context) => YoutubeSearchPage(
+          participantName: currentTrack.participant,
+          themeData: _seasonalThemeData,
+        ),
+        fullscreenDialog: true,
+      ),
+    );
+    if (!mounted ||
+        selection == null ||
+        selection.isBack ||
+        selection.isCancelled ||
+        _currentIndex != currentIndex ||
+        !identical(_tracks[currentIndex], currentTrack)) {
+      return;
+    }
+
+    final replacement = await _createTrack(
+      PlaylistItem(
+        participant: currentTrack.participant,
+        url: selection.url,
+        videoId: selection.videoId,
+        thumbnailUrl: selection.thumbnailUrl,
+        localPath: selection.localPath,
+        localTitle: selection.localTitle,
+        isLocalVideo: selection.isLocalVideo,
+        participantPosition: currentTrack.participantPosition,
+        totalParticipants: currentTrack.totalParticipants,
+      ),
+    );
+    if (!mounted) return;
+    if (replacement == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Impossibile caricare il video scelto.')),
       );
+      return;
+    }
+    if (_currentIndex != currentIndex ||
+        !identical(_tracks[currentIndex], currentTrack)) {
+      return;
+    }
+
+    setState(() {
+      _tracks[currentIndex] = replacement;
     });
+    await _playCurrent();
   }
 
   Future<void> _playCurrent() async {
@@ -1305,7 +1859,76 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     _audioHandler.updatePosition(Duration.zero);
     await _saveCheckpoint();
 
+    final isPreloadedYouTubeTrack =
+        item.localPath == null &&
+        !item.isSoundCloud &&
+        _preloadingVideoId == item.videoId;
+    if (isPreloadedYouTubeTrack && _preloadedVideoId != item.videoId) {
+      try {
+        await _webViewController.runJavaScript(
+          "document.querySelector('video')?.pause();",
+        );
+      } catch (error) {
+        debugPrint('Impossibile mettere in pausa il video precedente: $error');
+      }
+      final completer = _preloadCompleter;
+      if (completer != null) {
+        debugPrint(
+          'Attendo che il video successivo sia pronto nella WebView nascosta: '
+          '${item.videoId}',
+        );
+        try {
+          await completer.future.timeout(const Duration(seconds: 20));
+        } on TimeoutException {
+          debugPrint(
+            'Il preload di ${item.videoId} non ha segnalato lo stato pronto '
+            'entro 20 secondi; mostro comunque la WebView già caricata.',
+          );
+        }
+      }
+      if (!mounted) return;
+    }
+
+    if (item.localPath == null &&
+        !item.isSoundCloud &&
+        _preloadingVideoId == item.videoId) {
+      final previousController = _webViewController;
+      final preparedController = _preloadWebViewController;
+      final fullyBuffered = _preloadedVideoFullyBuffered;
+      try {
+        await previousController.runJavaScript(
+          "document.querySelector('video')?.pause();",
+        );
+      } catch (error) {
+        debugPrint('Impossibile mettere in pausa il video precedente: $error');
+      }
+      setState(() {
+        _webViewController = preparedController;
+        _preloadWebViewController = previousController;
+        _preloadedVideoId = null;
+        _preloadingVideoId = null;
+        _preloadedVideoFullyBuffered = false;
+      });
+      await WidgetsBinding.instance.endOfFrame;
+      await _activatePreloadedWebView(
+        preparedController,
+        fullyBuffered: fullyBuffered,
+      );
+      if (mounted) setState(() => _isTransitioning = false);
+      await _audioHandler.play();
+      unawaited(_preloadNextTrack());
+      return;
+    }
+
+    await _clearPreload();
     if (item.localPath != null) {
+      try {
+        await _webViewController.runJavaScript(
+          "document.querySelector('video')?.pause();",
+        );
+      } catch (error) {
+        debugPrint('Impossibile mettere in pausa il video precedente: $error');
+      }
       _localVideoError = null;
       final localFile = File(item.localPath!);
       if (!await localFile.exists()) {
@@ -1408,6 +2031,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     _audioHandler.play();
     final url = 'https://www.yout-ube.com/watch?v=${item.videoId}';
     await _webViewController.loadRequest(Uri.parse(url));
+    unawaited(_preloadNextTrack());
   }
 
   String _soundCloudPlayerHtml(String trackUrl) {
@@ -1812,6 +2436,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
   Future<void> _internalStop() async {
     final hadSoundCloudPlayer = _soundCloudPlayerActive;
     await _stopSoundCloudPlayer();
+    await _clearPreload();
     if (!hadSoundCloudPlayer) {
       await _webViewController.loadRequest(Uri.parse('about:blank'));
     }
@@ -1872,6 +2497,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       }
       await _playCurrent();
     } else if (!_isProcessing) {
+      await _clearPreload();
       await _stopSoundCloudPlayer();
       await _stopAndDisposeLocalVideo();
       await _checkpointStorage.clearCheckpoint();
@@ -1920,6 +2546,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
         (_currentIndex >= 0 && _currentIndex < _tracks.length)
         ? _tracks[_currentIndex]
         : null;
+    final showWebView = _currentIndex != -1 && currentItem?.localPath == null;
 
     final themeData = Theme.of(context).copyWith(
       scaffoldBackgroundColor: _seasonalBackgroundColor,
@@ -1973,6 +2600,34 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                         child: Stack(
                           fit: StackFit.expand,
                           children: [
+                            Positioned.fill(
+                              child: Offstage(
+                                offstage:
+                                    !showWebView ||
+                                    !identical(
+                                      _webViewController,
+                                      _firstWebViewController,
+                                    ),
+                                child: WebViewWidget(
+                                  key: ObjectKey(_firstWebViewController),
+                                  controller: _firstWebViewController,
+                                ),
+                              ),
+                            ),
+                            Positioned.fill(
+                              child: Offstage(
+                                offstage:
+                                    !showWebView ||
+                                    !identical(
+                                      _webViewController,
+                                      _secondWebViewController,
+                                    ),
+                                child: WebViewWidget(
+                                  key: ObjectKey(_secondWebViewController),
+                                  controller: _secondWebViewController,
+                                ),
+                              ),
+                            ),
                             if (_currentIndex != -1 &&
                                 currentItem?.isLocalVideo == true)
                               _localVideoController != null
@@ -2079,7 +2734,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                                 ),
                               )
                             else if (_currentIndex != -1)
-                              WebViewWidget(controller: _webViewController)
+                              const SizedBox.expand()
                             else
                               Container(
                                 color: _seasonalSurfaceColor,
@@ -2202,12 +2857,27 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                                         size: 16,
                                       ),
                                       const SizedBox(width: 8),
-                                      Text(
-                                        currentItem!.participantLabel,
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.w700,
-                                          fontSize: 13,
+                                      Tooltip(
+                                        message:
+                                            currentItem!.participant == 'Intro'
+                                            ? ''
+                                            : 'Tocca per cambiare il video di ${currentItem.participant}',
+                                        child: InkWell(
+                                          onTap:
+                                              currentItem.participant == 'Intro'
+                                              ? null
+                                              : _changeCurrentVideo,
+                                          borderRadius: BorderRadius.circular(
+                                            4,
+                                          ),
+                                          child: Text(
+                                            currentItem.participantLabel,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.w700,
+                                              fontSize: 13,
+                                            ),
+                                          ),
                                         ),
                                       ),
                                       if (_volumeBoost > 1.0) ...[
