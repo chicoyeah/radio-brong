@@ -19,6 +19,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'checkpoint_storage.dart';
 import 'spotify_utils.dart';
@@ -287,7 +288,8 @@ class RadioBrongHome extends StatefulWidget {
   State<RadioBrongHome> createState() => _RadioBrongHomeState();
 }
 
-class _RadioBrongHomeState extends State<RadioBrongHome> {
+class _RadioBrongHomeState extends State<RadioBrongHome>
+    with WidgetsBindingObserver {
   late final String _selectedLogo;
 
   static const String _introPlaylistUrl =
@@ -314,6 +316,7 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
   int _currentIndex = -1;
   bool _isProcessing = false;
   bool _isTransitioning = false;
+  bool _isAdvancingTrack = false;
   DateTime? _lastTrackChange;
   Timer? _videoStateTimer;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
@@ -330,6 +333,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(_setScreenAwake(true));
     _initLogo();
     _initWebView();
     _initPreloadWebView();
@@ -338,6 +343,24 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     _setupConnectivityListener();
     _loadCheckpoint();
     _checkForAppUpdate();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    unawaited(_setScreenAwake(state == AppLifecycleState.resumed));
+  }
+
+  Future<void> _setScreenAwake(bool keepAwake) async {
+    try {
+      if (keepAwake) {
+        await WakelockPlus.enable();
+      } else {
+        await WakelockPlus.disable();
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Impossibile aggiornare il blocco dello schermo: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
   }
 
   void _initLogo() {
@@ -549,8 +572,31 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
 
                   var v = document.querySelector('video');
                   if (v) {
-                    if (v.muted) v.muted = false;
-                    if (v.volume === 0) v.volume = 1.0;
+                    var player = document.querySelector('#movie_player');
+                    function ensureMaximumVolume() {
+                      if (window._radioPreloading) return;
+                      if (player && typeof player.isMuted === 'function' &&
+                          player.isMuted() && typeof player.unMute === 'function') {
+                        player.unMute();
+                      }
+                      if (player && typeof player.getVolume === 'function' &&
+                          player.getVolume() < 100 && typeof player.setVolume === 'function') {
+                        player.setVolume(100);
+                      }
+                      if (v.muted) v.muted = false;
+                      if (v.volume < 1) v.volume = 1;
+                    }
+                    ensureMaximumVolume();
+                    if (!v._radioMaximumVolumeGuardInstalled) {
+                      v._radioMaximumVolumeGuardInstalled = true;
+                      v.addEventListener('volumechange', ensureMaximumVolume);
+                      if (!window._radioMaximumVolumeTimer) {
+                        window._radioMaximumVolumeTimer = window.setInterval(
+                          ensureMaximumVolume,
+                          250,
+                        );
+                      }
+                    }
 
                     window._radioAdPlaybackUntil = window._radioAdPlaybackUntil || 0;
                     window._radioIsAdPlayback = function() {
@@ -577,6 +623,11 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                       v.loop = false;
                       v._retryCount = 0;
                       v._retryTimer = null;
+                      function reportVideoEnded() {
+                        if (v._radioEndReported) return;
+                        v._radioEndReported = true;
+                        FlutterRadio.postMessage('videoEnded');
+                      }
 
                       function attemptPlaybackRetry() {
                         if (v._retryCount >= 3) {
@@ -607,11 +658,14 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                           return;
                         }
                         console.log('Video ended event fired');
-                        FlutterRadio.postMessage('videoEnded');
+                        reportVideoEnded();
                       });
 
                       v.addEventListener('play', function() {
                         if (isAdPlayback()) return;
+                        if (v.duration > 0 && v.currentTime < v.duration - 1) {
+                          v._radioEndReported = false;
+                        }
                         v._retryCount = 0;
                         FlutterRadio.postMessage('videoPlaying');
                       });
@@ -629,11 +683,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
                       v.addEventListener('timeupdate', function() {
                         if (isAdPlayback()) return;
                         if (v.duration > 1 && v.currentTime > 0 && v.currentTime >= v.duration - 0.3) {
-                          if (!v._endedSent) {
-                            v._endedSent = true;
-                            console.log('Video near end detected');
-                            FlutterRadio.postMessage('videoEnded');
-                          }
+                          console.log('Video near end detected');
+                          reportVideoEnded();
                         }
                       });
 
@@ -1128,10 +1179,45 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
             }
             video.loop = false;
             var player = document.querySelector('#movie_player');
-            if (player && typeof player.unMute === 'function') player.unMute();
-            if (player && typeof player.setVolume === 'function') player.setVolume(100);
-            video.muted = false;
-            video.volume = 1;
+            function ensureMaximumVolume() {
+              if (player && typeof player.isMuted === 'function' && player.isMuted() &&
+                  typeof player.unMute === 'function') {
+                player.unMute();
+              }
+              if (player && typeof player.getVolume === 'function' && player.getVolume() < 100 &&
+                  typeof player.setVolume === 'function') {
+                player.setVolume(100);
+              }
+              if (video.muted) video.muted = false;
+              if (video.volume < 1) video.volume = 1;
+            }
+            function verifyAudible(attempt) {
+              ensureMaximumVolume();
+              var playerMuted = player && typeof player.isMuted === 'function' && player.isMuted();
+              var playerBelowMaximum = player && typeof player.getVolume === 'function' && player.getVolume() < 100;
+              if (attempt < 30 && (video.muted || video.volume < 1 || playerMuted || playerBelowMaximum)) {
+                window.setTimeout(function() { verifyAudible(attempt + 1); }, 100);
+              }
+            }
+            if (!video._radioAudioGuardInstalled) {
+              video._radioAudioGuardInstalled = true;
+              video.addEventListener('volumechange', ensureMaximumVolume);
+              video.addEventListener('play', function() {
+                ensureMaximumVolume();
+                verifyAudible(0);
+              });
+              if (!window._radioMaximumVolumeTimer) {
+                window._radioMaximumVolumeTimer = window.setInterval(function() {
+                  if (window._radioPreloading) {
+                    window.clearInterval(window._radioMaximumVolumeTimer);
+                    window._radioMaximumVolumeTimer = null;
+                    return;
+                  }
+                  ensureMaximumVolume();
+                }, 250);
+              }
+            }
+            verifyAudible(0);
             var beginningIsBuffered = false;
             for (var i = 0; i < video.buffered.length; i++) {
               if (video.buffered.start(i) <= 0.25 &&
@@ -1372,6 +1458,8 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(_setScreenAwake(false));
     final preloadCompleter = _preloadCompleter;
     if (preloadCompleter != null && !preloadCompleter.isCompleted) {
       preloadCompleter.complete();
@@ -1789,56 +1877,71 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     );
     if (confirm != true || !mounted) return;
 
-    await _audioHandler.pause();
-    if (!mounted) return;
+    setState(() => _isTransitioning = true);
+    var replacementCommitted = false;
+    try {
+      await _audioHandler.pause();
+      if (!mounted) return;
 
-    final selection = await Navigator.of(context).push<PlaylistItem>(
-      MaterialPageRoute(
-        builder: (context) => YoutubeSearchPage(
-          participantName: currentTrack.participant,
-          themeData: _seasonalThemeData,
+      final selection = await Navigator.of(context).push<PlaylistItem>(
+        MaterialPageRoute(
+          builder: (context) => YoutubeSearchPage(
+            participantName: currentTrack.participant,
+            themeData: _seasonalThemeData,
+          ),
+          fullscreenDialog: true,
         ),
-        fullscreenDialog: true,
-      ),
-    );
-    if (!mounted ||
-        selection == null ||
-        selection.isBack ||
-        selection.isCancelled ||
-        _currentIndex != currentIndex ||
-        !identical(_tracks[currentIndex], currentTrack)) {
-      return;
-    }
-
-    final replacement = await _createTrack(
-      PlaylistItem(
-        participant: currentTrack.participant,
-        url: selection.url,
-        videoId: selection.videoId,
-        thumbnailUrl: selection.thumbnailUrl,
-        localPath: selection.localPath,
-        localTitle: selection.localTitle,
-        isLocalVideo: selection.isLocalVideo,
-        participantPosition: currentTrack.participantPosition,
-        totalParticipants: currentTrack.totalParticipants,
-      ),
-    );
-    if (!mounted) return;
-    if (replacement == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Impossibile caricare il video scelto.')),
       );
-      return;
-    }
-    if (_currentIndex != currentIndex ||
-        !identical(_tracks[currentIndex], currentTrack)) {
-      return;
-    }
+      if (!mounted ||
+          selection == null ||
+          selection.isBack ||
+          selection.isCancelled ||
+          _currentIndex != currentIndex ||
+          !identical(_tracks[currentIndex], currentTrack)) {
+        return;
+      }
 
-    setState(() {
-      _tracks[currentIndex] = replacement;
-    });
-    await _playCurrent();
+      final replacement = await _createTrack(
+        PlaylistItem(
+          participant: currentTrack.participant,
+          url: selection.url,
+          videoId: selection.videoId,
+          thumbnailUrl: selection.thumbnailUrl,
+          localPath: selection.localPath,
+          localTitle: selection.localTitle,
+          isLocalVideo: selection.isLocalVideo,
+          participantPosition: currentTrack.participantPosition,
+          totalParticipants: currentTrack.totalParticipants,
+        ),
+      );
+      if (!mounted) return;
+      if (replacement == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Impossibile caricare il video scelto.'),
+          ),
+        );
+        return;
+      }
+      if (_currentIndex != currentIndex ||
+          !identical(_tracks[currentIndex], currentTrack)) {
+        return;
+      }
+
+      setState(() {
+        _tracks[currentIndex] = replacement;
+      });
+      replacementCommitted = true;
+      await _playCurrent();
+    } finally {
+      if (!replacementCommitted &&
+          mounted &&
+          _currentIndex == currentIndex &&
+          identical(_tracks[currentIndex], currentTrack)) {
+        setState(() => _isTransitioning = false);
+        await _audioHandler.play();
+      }
+    }
   }
 
   Future<void> _playCurrent() async {
@@ -2019,7 +2122,6 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
     }
 
     if (item.isSoundCloud) {
-      _audioHandler.play();
       _soundCloudPlayerActive = true;
       await _webViewController.loadHtmlString(
         _soundCloudPlayerHtml(item.videoId),
@@ -2028,7 +2130,6 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
       return;
     }
 
-    _audioHandler.play();
     final url = 'https://www.yout-ube.com/watch?v=${item.videoId}';
     await _webViewController.loadRequest(Uri.parse(url));
     unawaited(_preloadNextTrack());
@@ -2477,40 +2578,50 @@ class _RadioBrongHomeState extends State<RadioBrongHome> {
   }
 
   Future<void> _nextTrack() async {
+    if (_currentIndex < 0 || _currentIndex >= _tracks.length) {
+      return;
+    }
+    if (_isAdvancingTrack) return;
+
     final now = DateTime.now();
     if (_lastTrackChange != null &&
         now.difference(_lastTrackChange!) < const Duration(seconds: 2)) {
       return;
     }
     _lastTrackChange = now;
+    _isAdvancingTrack = true;
 
-    if (_currentIndex + 1 < _tracks.length) {
-      final previousItem = _tracks[_currentIndex];
-      setState(() {
-        _currentIndex++;
-      });
-      final nextItem = _tracks[_currentIndex];
-      if (previousItem.localPath == null &&
-          nextItem.localPath != null &&
-          nextItem.isLocalVideo) {
-        await WidgetsBinding.instance.endOfFrame;
-      }
-      await _playCurrent();
-    } else if (!_isProcessing) {
-      await _clearPreload();
-      await _stopSoundCloudPlayer();
-      await _stopAndDisposeLocalVideo();
-      await _checkpointStorage.clearCheckpoint();
-      if (mounted) {
+    try {
+      if (_currentIndex + 1 < _tracks.length) {
+        final previousItem = _tracks[_currentIndex];
         setState(() {
-          _currentIndex = -1;
-          _checkpoint = null;
-          _hasCheckpoint = false;
+          _currentIndex++;
         });
-      }
+        final nextItem = _tracks[_currentIndex];
+        if (previousItem.localPath == null &&
+            nextItem.localPath != null &&
+            nextItem.isLocalVideo) {
+          await WidgetsBinding.instance.endOfFrame;
+        }
+        await _playCurrent();
+      } else if (!_isProcessing) {
+        await _clearPreload();
+        await _stopSoundCloudPlayer();
+        await _stopAndDisposeLocalVideo();
+        await _checkpointStorage.clearCheckpoint();
+        if (mounted) {
+          setState(() {
+            _currentIndex = -1;
+            _checkpoint = null;
+            _hasCheckpoint = false;
+          });
+        }
 
-      _audioHandler.stopSilently();
-      _openParticipantSelector();
+        _audioHandler.stopSilently();
+        _openParticipantSelector();
+      }
+    } finally {
+      _isAdvancingTrack = false;
     }
   }
 
