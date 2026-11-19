@@ -788,8 +788,6 @@ class _RadioBrongHomeState extends State<RadioBrongHome>
               viewport.name = 'viewport';
               (document.head || document.documentElement).appendChild(viewport);
             }
-
-            }
             var content = 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no';
             if (viewport.content !== content) viewport.content = content;
           }
@@ -1672,10 +1670,11 @@ class _RadioBrongHomeState extends State<RadioBrongHome>
     );
     if (result != null && result.participants.isNotEmpty) {
       _lastParticipants = List.from(result.participants);
-      final participants = result.randomize
-          ? (List<String>.from(result.participants)..shuffle())
-          : result.participants;
-      await _collectSongs(participants);
+      await _collectSongs(
+        result.participants,
+        rounds: result.rounds,
+        randomize: result.randomize,
+      );
     }
   }
 
@@ -1705,21 +1704,45 @@ class _RadioBrongHomeState extends State<RadioBrongHome>
     return null;
   }
 
-  Future<void> _collectSongs(List<String> participants) async {
-    List<PlaylistItem> newPlaylist = [];
-    final introUrl = await _pickRandomIntroUrl();
-    if (introUrl != null) {
-      newPlaylist.add(PlaylistItem(participant: "Intro", url: introUrl));
+  Future<void> _collectSongs(
+    List<String> participants, {
+    required int rounds,
+    required bool randomize,
+  }) async {
+    final selections = <({String participant, int round, int position})>[];
+    for (var round = 1; round <= rounds; round++) {
+      final roundParticipants = List<String>.from(participants);
+      if (randomize) roundParticipants.shuffle();
+      for (var position = 0; position < roundParticipants.length; position++) {
+        selections.add((
+          participant: roundParticipants[position],
+          round: round,
+          position: position + 1,
+        ));
+      }
     }
 
+    final introUrls = <int, String?>{};
+    final selectedItems = <int, PlaylistItem>{};
     final themeData = _seasonalThemeData;
     int i = 0;
-    while (i < participants.length) {
-      final p = participants[i];
+    while (i < selections.length) {
+      if (!mounted) return;
+      final selection = selections[i];
+      if (!introUrls.containsKey(selection.round)) {
+        introUrls[selection.round] = await _pickRandomIntroUrl();
+        if (!mounted) return;
+      }
+      final participantName = rounds == 1
+          ? selection.participant
+          : '${selection.participant} · ${selection.position}/${participants.length} '
+                '(Giro ${selection.round}/$rounds)';
       final PlaylistItem? item = await Navigator.of(context).push<PlaylistItem>(
         MaterialPageRoute(
-          builder: (context) =>
-              YoutubeSearchPage(participantName: p, themeData: themeData),
+          builder: (context) => YoutubeSearchPage(
+            participantName: participantName,
+            themeData: themeData,
+          ),
           fullscreenDialog: true,
         ),
       );
@@ -1733,27 +1756,48 @@ class _RadioBrongHomeState extends State<RadioBrongHome>
         if (i == 0) {
           return;
         }
-        newPlaylist.removeWhere(
-          (playlistItem) => playlistItem.participantPosition == i,
-        );
+        selectedItems.remove(i - 1);
         i -= 1;
         continue;
       }
 
-      newPlaylist.add(
-        PlaylistItem(
-          participant: item.participant,
-          url: item.url,
-          videoId: item.videoId,
-          thumbnailUrl: item.thumbnailUrl,
-          localPath: item.localPath,
-          isLocalVideo: item.isLocalVideo,
-          localTitle: item.localTitle,
-          participantPosition: i + 1,
-          totalParticipants: participants.length,
-        ),
+      selectedItems[i] = PlaylistItem(
+        participant: participantName,
+        url: item.url,
+        videoId: item.videoId,
+        thumbnailUrl: item.thumbnailUrl,
+        localPath: item.localPath,
+        isLocalVideo: item.isLocalVideo,
+        localTitle: item.localTitle,
+        participantPosition: rounds == 1 ? selection.position : null,
+        totalParticipants: rounds == 1 ? participants.length : null,
       );
       i += 1;
+    }
+
+    final newPlaylist = <PlaylistItem>[];
+    final roundsWithIntro = <int>{};
+    for (
+      var selectionIndex = 0;
+      selectionIndex < selections.length;
+      selectionIndex++
+    ) {
+      final item = selectedItems[selectionIndex];
+      if (item == null) continue;
+
+      final round = selections[selectionIndex].round;
+      if (roundsWithIntro.add(round)) {
+        final introUrl = introUrls[round];
+        if (introUrl != null) {
+          newPlaylist.add(
+            PlaylistItem(
+              participant: round == 1 ? 'Intro' : 'Intermezzo',
+              url: introUrl,
+            ),
+          );
+        }
+      }
+      newPlaylist.add(item);
     }
 
     if (newPlaylist.isNotEmpty) {
@@ -2606,7 +2650,12 @@ class _RadioBrongHomeState extends State<RadioBrongHome>
         await _playCurrent();
       } else if (!_isProcessing) {
         await _clearPreload();
-        await _stopSoundCloudPlayer();
+        final hadSoundCloudPlayer = _soundCloudPlayerActive;
+        if (hadSoundCloudPlayer) {
+          unawaited(_stopSoundCloudPlayer());
+        } else {
+          unawaited(_loadBlankWebView());
+        }
         await _stopAndDisposeLocalVideo();
         await _checkpointStorage.clearCheckpoint();
         if (mounted) {
@@ -2838,6 +2887,32 @@ class _RadioBrongHomeState extends State<RadioBrongHome>
                                           color: Colors.white,
                                           fontSize: 18,
                                           fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              )
+                            else if (_isProcessing)
+                              Center(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const CircularProgressIndicator(),
+                                    const SizedBox(height: 16),
+                                    const Text(
+                                      'Preparazione della playlist...',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      '${_tracks.length}/${_playlist.length} brani caricati',
+                                      style: TextStyle(
+                                        color: Colors.white.withValues(
+                                          alpha: 0.7,
                                         ),
                                       ),
                                     ),
@@ -3162,10 +3237,12 @@ class TrackItem {
 class ParticipantSelectionResult {
   final List<String> participants;
   final bool randomize;
+  final int rounds;
 
   const ParticipantSelectionResult({
     required this.participants,
     required this.randomize,
+    this.rounds = 1,
   });
 }
 
@@ -3185,6 +3262,7 @@ class ParticipantSelectorPage extends StatefulWidget {
 class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
   late List<String> _participants;
   bool _randomizeParticipants = true;
+  int _rounds = 1;
   final TextEditingController _controller = TextEditingController();
 
   @override
@@ -3318,6 +3396,63 @@ class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
                                 ),
                         ),
                         SizedBox(height: compact ? 6 : 16),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.repeat,
+                                size: 18,
+                                color: Colors.white70,
+                              ),
+                              const SizedBox(width: 6),
+                              const Text(
+                                'Giri',
+                                style: TextStyle(color: Colors.white70),
+                              ),
+                              const SizedBox(width: 4),
+                              IconButton(
+                                tooltip: 'Diminuisci giri',
+                                visualDensity: VisualDensity.compact,
+                                constraints: const BoxConstraints.tightFor(
+                                  width: 36,
+                                  height: 36,
+                                ),
+                                padding: EdgeInsets.zero,
+                                onPressed: _rounds > 1
+                                    ? () => setState(() => _rounds--)
+                                    : null,
+                                icon: const Icon(Icons.remove, size: 18),
+                              ),
+                              SizedBox(
+                                width: 42,
+                                child: Text(
+                                  '$_rounds/10',
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              IconButton(
+                                tooltip: 'Aumenta giri',
+                                visualDensity: VisualDensity.compact,
+                                constraints: const BoxConstraints.tightFor(
+                                  width: 36,
+                                  height: 36,
+                                ),
+                                padding: EdgeInsets.zero,
+                                onPressed: _rounds < 10
+                                    ? () => setState(() => _rounds++)
+                                    : null,
+                                icon: const Icon(Icons.add, size: 18),
+                              ),
+                            ],
+                          ),
+                        ),
+                        SizedBox(height: compact ? 2 : 6),
                         Container(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 16,
@@ -3385,6 +3520,7 @@ class _ParticipantSelectorPageState extends State<ParticipantSelectorPage> {
                               ParticipantSelectionResult(
                                 participants: List.from(_participants),
                                 randomize: _randomizeParticipants,
+                                rounds: _rounds,
                               ),
                             ),
                       style: ElevatedButton.styleFrom(
